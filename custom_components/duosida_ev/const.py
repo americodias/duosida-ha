@@ -49,6 +49,11 @@ CONFIGURATION_REFRESH_INTERVAL: Final = 600
 # answering (cause unknown; a capture shows the vendor app's read ignored too).
 CONFIGURATION_READ_DELAY: Final = 3
 
+# Seconds to wait for the answer to one read, resends included. Commands keep
+# the library's 5 s. Live, every answer came within 2.2 s of a send and at most
+# 6.2 s after the first one; with resends every 2 s, 7 s gives 4 sends.
+CONFIGURATION_READ_TIMEOUT: Final = 7
+
 # After a read gets no answer, the next one is a new request (new message id)
 # after these many seconds, then every CONFIGURATION_REFRESH_INTERVAL.
 CONFIGURATION_RETRY_BACKOFF: Final = (60, 120, 300)

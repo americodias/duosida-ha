@@ -21,6 +21,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.duosida_ev.const import (
     CONFIGURATION_READ_DELAY,
+    CONFIGURATION_READ_TIMEOUT,
     CONFIGURATION_REFRESH_INTERVAL,
     CONFIGURATION_RETRY_BACKOFF,
     COORDINATOR,
@@ -222,6 +223,14 @@ async def test_configuration_is_read_shortly_after_the_first_push(
     assert _configuration_reads(client) == 0
     await run_scheduled_configuration_read(hass)
     assert _configuration_reads(client) == 1
+
+
+async def test_configuration_read_waits_longer_than_commands(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
+) -> None:
+    """The charger answers some reads only 5-6 s after the first send."""
+    await run_scheduled_configuration_read(hass)
+    assert client.configuration_timeouts == [CONFIGURATION_READ_TIMEOUT]
 
 
 async def test_max_current_is_read_from_the_charger(

@@ -29,12 +29,13 @@ separately for Home Assistant core.
     run it is unknown: the stored value from an earlier run may be stale.
     It is still saved on writes, because 1.0 reads it from the store.
     The read runs from a timer 3 s after a status push, never inside the
-    listener. Reads happen once per session, then every 10 min. A read with
+    listener, and waits up to 7 s (`get_configuration(timeout=7)`: 4 sends;
+    commands keep the library's 5 s). Reads happen once per session, then every 10 min. A read with
     no answer is retried as a new request (new message id) after
     60/120/300 s, then every 10 min.
   - The charger silently ignores some reads, cause unknown. It TCP-ACKs the
     request and never answers. A capture of the vendor app shows its read
-    ignored too, and same-id resends don't help (the app's or the library's);
+    ignored too, and same-id resends don't always help (the app's or the library's);
   - the rest is the last value written from HA, kept in `Store`
     `duosida_ev.<device_id>`. Unknown keys in that store, such as the 1.0
     energy integration, are preserved, so downgrading loses nothing;

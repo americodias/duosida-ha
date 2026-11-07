@@ -44,6 +44,7 @@ from duosida_ev import (
 
 from .const import (
     CONFIGURATION_READ_DELAY,
+    CONFIGURATION_READ_TIMEOUT,
     CONFIGURATION_REFRESH_INTERVAL,
     CONFIGURATION_RETRY_BACKOFF,
     DOMAIN,
@@ -337,7 +338,9 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._configuration_next_at = time.monotonic() + CONFIGURATION_REFRESH_INTERVAL
         self._configuration_reading = True
         try:
-            configuration = await self.client.get_configuration()
+            configuration = await self.client.get_configuration(
+                timeout=CONFIGURATION_READ_TIMEOUT
+            )
         except DuosidaError as err:
             self._configuration_failures += 1
             delay = (

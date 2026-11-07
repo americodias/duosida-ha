@@ -93,6 +93,7 @@ class FakeDuosidaClient:
         self.connect_calls = 0
         self.disconnect_calls = 0
         self.calls: list[tuple[Any, ...]] = []
+        self.configuration_timeouts: list[float | None] = []
         self._listeners: list[Callable[[], None]] = []
 
     @property
@@ -162,6 +163,7 @@ class FakeDuosidaClient:
         self, *, timeout: float | None = None
     ) -> ChargerConfiguration:
         self.calls.append(("get_configuration",))
+        self.configuration_timeouts.append(timeout)
         if self.configuration_error is not None:
             raise self.configuration_error
         return self.configuration

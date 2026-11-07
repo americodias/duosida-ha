@@ -27,7 +27,8 @@ Requires `duosida-ev` 0.2.0 and Home Assistant 2024.12 or newer.
 - **Max Charging Current is read from the charger**, so changes made outside
   Home Assistant show up. The charger sometimes ignores this read; then the
   last value set from Home Assistant since Home Assistant started or the
-  integration was reloaded, if any, is shown, and the read is retried after
+  integration was reloaded, if any, is shown. Each read waits up to 7 s for
+  an answer, and an unanswered read is retried after
   1, 2 and 5 minutes, then every 10 minutes. Until the first answered read or
   the first change from Home Assistant, the value is unknown: one remembered
   from before a restart or reload may be out of date.
