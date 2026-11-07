@@ -12,8 +12,8 @@ close and refuses fast reconnects. ``ReconnectGate`` (one per host, shared
 with the config flow) decides when the next connection may be opened.
 
 Settings are written to the charger, which confirms or rejects each write.
-The maximum current is also read back from the charger (at connect and every
-few minutes). The other settings are not read back reliably yet, so the
+The maximum current is also read back from the charger (once per session,
+then every 10 minutes, sooner after a read without answer). The other settings are not read back reliably yet, so the
 integration remembers the last value written from Home Assistant. It never
 writes settings on its own (for example on startup).
 """
@@ -22,14 +22,15 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -42,7 +43,9 @@ from duosida_ev import (
 )
 
 from .const import (
+    CONFIGURATION_READ_DELAY,
     CONFIGURATION_REFRESH_INTERVAL,
+    CONFIGURATION_RETRY_BACKOFF,
     DOMAIN,
     RECONNECT_BACKOFF,
     RECONNECT_GATES,
@@ -127,7 +130,13 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._stored_settings: dict[str, Any] = {}
         self._configuration: ChargerConfiguration | None = None
         self._configuration_read_at: float | None = None
-        self._configuration_attempted_at: float | None = None
+        # When the next read is due (None: now), and how many in a row got
+        # no answer. A new session resets both.
+        self._configuration_next_at: float | None = None
+        self._configuration_failures = 0
+        self._configuration_reading = False
+        self._cancel_configuration_read: CALLBACK_TYPE | None = None
+        self._last_push_at = 0.0
         self._written_at: dict[str, float] = {}
         # The client keeps its last status after a disconnect and notifies on
         # every change; only a status object not seen before is published.
@@ -163,8 +172,6 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._gate.succeeded()
         self._silent_refreshes = 0
         self._last_status = status
-        if self._configuration_due():
-            await self._async_refresh_configuration()
         return self._build_data(status)
 
     async def _async_connect(self) -> None:
@@ -179,7 +186,8 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(
                 f"Cannot connect to the charger: {err} (next attempt in {delay} s)"
             ) from err
-        self._configuration_attempted_at = None
+        self._configuration_next_at = None
+        self._configuration_failures = 0
 
     async def _async_handle_silence(self) -> None:
         """Close a session that stays connected but sends no status.
@@ -199,6 +207,7 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Called by the client on every status push or connection change."""
         if not self.client.connected:
             self._gate.closed()
+            self._cancel_scheduled_configuration_read()
             if self.data is not None and self.last_update_success:
                 self.async_set_update_error(
                     UpdateFailed("Connection to the charger lost")
@@ -208,18 +217,15 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if status is None or status is self._last_status:
             return
         self._last_status = status
+        self._last_push_at = time.monotonic()
         self._silent_refreshes = 0
         self.async_set_updated_data(self._build_data(status))
-        if self._configuration_due():
-            self.config_entry.async_create_background_task(
-                self.hass,
-                self._async_refresh_configuration_in_background(),
-                f"{DOMAIN} configuration refresh",
-            )
+        self._schedule_configuration_read()
 
     async def async_disconnect(self) -> None:
         """Close the session cleanly. Safe to call more than once."""
         self._remove_listener()
+        self._cancel_scheduled_configuration_read()
         was_connected = self.client.connected
         await self.client.disconnect()
         # Only a session that was open keeps the charger busy; a setup retry
@@ -271,26 +277,99 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return int(read)
         return self._stored_settings.get(key)
 
-    def _configuration_due(self) -> bool:
-        return (
-            self._configuration_attempted_at is None
-            or time.monotonic() - self._configuration_attempted_at
-            > CONFIGURATION_REFRESH_INTERVAL
+    @callback
+    def _schedule_configuration_read(self) -> None:
+        """Read the configuration a few seconds from now, if a read is due.
+
+        Never straight from the status push: the charger ignores some reads,
+        and a read sent between pushes is one variable fewer.
+        """
+        if (
+            self._configuration_reading
+            or self._cancel_configuration_read is not None
+            or (
+                self._configuration_next_at is not None
+                and time.monotonic() < self._configuration_next_at
+            )
+        ):
+            return
+        self._cancel_configuration_read = async_call_later(
+            self.hass, CONFIGURATION_READ_DELAY, self._start_configuration_read
         )
 
-    async def _async_refresh_configuration(self) -> None:
-        self._configuration_attempted_at = time.monotonic()
+    @callback
+    def _start_configuration_read(self, _now: datetime) -> None:
+        # A drop or unload cancels the timer, so the session is still open.
+        self._cancel_configuration_read = None
+        if self._configuration_reading:
+            return
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_refresh_configuration_in_background(),
+            f"{DOMAIN} configuration read",
+        )
+
+    @callback
+    def _cancel_scheduled_configuration_read(self) -> None:
+        if self._cancel_configuration_read is not None:
+            self._cancel_configuration_read()
+            self._cancel_configuration_read = None
+
+    async def _async_refresh_configuration(self) -> bool:
+        """Read the configuration; return whether the charger answered.
+
+        A read without answer is retried sooner (CONFIGURATION_RETRY_BACKOFF),
+        each time as a new request: the library's resends reuse the message
+        id, and the charger has ignored those too.
+        """
+        attempt = self._configuration_failures + 1
+        since_push = time.monotonic() - self._last_push_at
+        # Overwritten below; it only stays if the library raises something
+        # unexpected, which then can't turn into one read per push.
+        self._configuration_next_at = time.monotonic() + CONFIGURATION_REFRESH_INTERVAL
+        self._configuration_reading = True
         try:
             configuration = await self.client.get_configuration()
         except DuosidaError as err:
-            _LOGGER.debug("Cannot read the charger configuration: %s", err)
-            return
+            self._configuration_failures += 1
+            delay = (
+                CONFIGURATION_RETRY_BACKOFF[self._configuration_failures - 1]
+                if self._configuration_failures <= len(CONFIGURATION_RETRY_BACKOFF)
+                else CONFIGURATION_REFRESH_INTERVAL
+            )
+            self._configuration_next_at = time.monotonic() + delay
+            _LOGGER.debug(
+                "No configuration from the charger (attempt %s, %.1f s after a "
+                "status push): %s; next attempt in %s s",
+                attempt,
+                since_push,
+                err,
+                delay,
+            )
+            return False
+        finally:
+            self._configuration_reading = False
         self._configuration = configuration
         self._configuration_read_at = time.monotonic()
+        self._configuration_failures = 0
+        self._configuration_next_at = (
+            self._configuration_read_at + CONFIGURATION_REFRESH_INTERVAL
+        )
+        _LOGGER.debug(
+            "Read the charger configuration (attempt %s, %.1f s after a status push)",
+            attempt,
+            since_push,
+        )
+        return True
 
     async def _async_refresh_configuration_in_background(self) -> None:
-        await self._async_refresh_configuration()
-        self.async_update_listeners()
+        try:
+            answered = await self._async_refresh_configuration()
+        except Exception:  # background task: log it instead of losing it
+            _LOGGER.exception("Unexpected error reading the charger configuration")
+            return
+        if answered:
+            self.async_update_listeners()
 
     # ------------------------------------------------------------ commands
 

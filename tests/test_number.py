@@ -17,7 +17,7 @@ from homeassistant.exceptions import HomeAssistantError
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from .conftest import FakeDuosidaClient, entity
+from .conftest import FakeDuosidaClient, entity, run_scheduled_configuration_read
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +43,7 @@ async def _set(hass: HomeAssistant, key: str, value: float) -> None:
 @pytest.mark.usefixtures("init_integration")
 async def test_max_current_shows_the_charger_value(hass: HomeAssistant) -> None:
     """The maximum current is read from the charger."""
+    await run_scheduled_configuration_read(hass)
     assert hass.states.get(entity("number", "max_charging_current")).state == "16"
 
 
@@ -50,6 +51,8 @@ async def test_set_max_current(
     hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
     """Setting the current sends it and shows the new value."""
+    await run_scheduled_configuration_read(hass)
+    assert hass.states.get(entity("number", "max_charging_current")).state == "16"
     await _set(hass, "max_charging_current", 10)
     assert ("set_max_current", 10) in client.calls
     assert hass.states.get(entity("number", "max_charging_current")).state == "10"
@@ -59,6 +62,7 @@ async def test_rejected_max_current_raises(
     hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
     """A rejected write surfaces as an error and the value stays."""
+    await run_scheduled_configuration_read(hass)
     client.command_error = CommandRejectedError(
         "set VendorMaxWorkCurrent", 1, "REJECTED"
     )

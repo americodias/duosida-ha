@@ -23,10 +23,19 @@ from duosida_ev import (
 )
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
-from custom_components.duosida_ev.const import CONF_DEVICE_ID, DEFAULT_PORT, DOMAIN
+from custom_components.duosida_ev.const import (
+    CONF_DEVICE_ID,
+    CONFIGURATION_READ_DELAY,
+    DEFAULT_PORT,
+    DOMAIN,
+)
 
 pytest_plugins = "pytest_homeassistant_custom_component"
 
@@ -250,6 +259,14 @@ async def init_integration(
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     return config_entry
+
+
+async def run_scheduled_configuration_read(hass: HomeAssistant) -> None:
+    """Let a configuration read scheduled after a status push run."""
+    async_fire_time_changed(
+        hass, dt_util.utcnow() + timedelta(seconds=CONFIGURATION_READ_DELAY + 1)
+    )
+    await hass.async_block_till_done()
 
 
 def entity(platform: str, key: str) -> str:

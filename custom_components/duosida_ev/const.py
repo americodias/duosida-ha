@@ -40,8 +40,18 @@ SESSION_RELEASE_DELAY: Final = 35
 # watchdog refreshes in a row, so the next refresh can reconnect.
 SILENT_REFRESHES_BEFORE_RECONNECT: Final = 2
 
-# Re-read the configuration at most this often (it only changes when written).
+# Re-read an answered configuration after this many seconds (it only changes
+# when written).
 CONFIGURATION_REFRESH_INTERVAL: Final = 600
+
+# The configuration is read this many seconds after a status push, from a
+# timer, never straight from the push. The charger ignores some reads without
+# answering (cause unknown; a capture shows the vendor app's read ignored too).
+CONFIGURATION_READ_DELAY: Final = 3
+
+# After a read gets no answer, the next one is a new request (new message id)
+# after these many seconds, then every CONFIGURATION_REFRESH_INTERVAL.
+CONFIGURATION_RETRY_BACKOFF: Final = (60, 120, 300)
 
 # Connection status codes as this integration has always shown them. The raw
 # code comes from the charger; the names are kept stable for automations.

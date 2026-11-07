@@ -24,8 +24,14 @@ separately for Home Assistant core.
 - `coordinator.data` keeps the 1.0 keys (`conn_status`, `temperature_station`,
   `session_time` in minutes, …) so the entities didn't change.
 - **Settings:**
-  - `max_current` is read back (`get_configuration` at connect and every
-    10 min; the newer of the last read and the last write is shown);
+  - `max_current` is read back with `get_configuration`, the newer of the
+    last read and the last write is shown. The read runs from a timer 3 s
+    after a status push, never inside the listener. Reads happen once per
+    session, then every 10 min. A read with no answer is retried as a new
+    request (new message id) after 60/120/300 s, then every 10 min.
+  - The charger silently ignores some reads, cause unknown. It TCP-ACKs the
+    request and never answers. A capture of the vendor app shows its read
+    ignored too, and same-id resends don't help (the app's or the library's);
   - the rest is the last value written from HA, kept in `Store`
     `duosida_ev.<device_id>`. Unknown keys in that store, such as the 1.0
     energy integration, are preserved, so downgrading loses nothing;
