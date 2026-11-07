@@ -63,7 +63,7 @@ separately for Home Assistant core.
 
 ```bash
 uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python 'duosida-ev==0.2.1' pytest \
+uv pip install --python .venv/bin/python 'duosida-ev==0.2.2' pytest \
   pytest-homeassistant-custom-component pytest-cov mypy
 # unreleased library changes: uv pip install --python .venv/bin/python -e ../duosida-ev
 
