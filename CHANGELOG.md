@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - Unreleased
 
-Requires `duosida-ev` 0.2.0 and Home Assistant 2024.12 or newer.
+Requires `duosida-ev` 0.2.1 and Home Assistant 2024.12 or newer.
 
 ### Changed
 
-- **One persistent connection.** Built on the async `duosida-ev` 0.2.0. The
+- **One persistent connection.** Built on the async `duosida-ev` 0.2.1. The
   charger pushes its status about every 10 seconds, instead of Home Assistant
   opening a new connection on every poll. The charger accepts only one
   connection and refuses fast reconnects, which caused bursts of

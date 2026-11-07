@@ -9,7 +9,7 @@ authors = [
     {name = "Américo Dias", email = "americodias@users.noreply.github.com"}
 ]
 dependencies = [
-    "duosida-ev==0.2.0",
+    "duosida-ev==0.2.1",
 ]
 
 [project.optional-dependencies]
