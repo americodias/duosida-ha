@@ -223,7 +223,7 @@ The Total Energy sensor is automatically compatible with Home Assistant's Energy
 
 ### Why do some settings show "Unknown"?
 
-The maximum charging current is read from the charger. Some chargers occasionally ignore that read; the integration then shows the last value set from Home Assistant, if any, and retries after 1, 2 and 5 minutes, then every 10 minutes. The other settings (LED brightness, direct mode, voltage thresholds, stop on disconnect) are not read back reliably yet, so they start as "Unknown" until you set them from Home Assistant. Once set, the value is remembered across restarts. The integration never writes a setting on its own, for example at startup.
+The maximum charging current is read from the charger. Some chargers occasionally ignore that read; the integration then shows the last value set from Home Assistant since it started or the integration was reloaded, if any, and retries after 1, 2 and 5 minutes, then every 10 minutes. Until the charger answers or you set it, it shows "Unknown": a value from before a restart may be out of date, because it can be changed outside Home Assistant in the meantime (for example from the app). The other settings (LED brightness, direct mode, voltage thresholds, stop on disconnect) are not read back reliably yet, so they start as "Unknown" until you set them from Home Assistant. Once set, those values are remembered across restarts. The integration never writes a setting on its own, for example at startup.
 
 ### What's the difference between Session Energy and Total Energy?
 

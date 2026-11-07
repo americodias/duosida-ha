@@ -86,9 +86,9 @@ class DuosidaMaxCurrentNumber(DuosidaEntity, NumberEntity):
         Read back from the charger, or the last value written from Home
         Assistant if that is newer.
 
-        Returns None if the user hasn't set this value yet, indicating
-        the state is unknown. This prevents the integration from making
-        assumptions about the charger's configuration.
+        Returns None (unknown) until the charger answers a read or Home
+        Assistant sets a value in this run. A value stored by an earlier
+        run is not shown, because it may be stale.
         """
         return self.coordinator.get_setting("max_current")
 

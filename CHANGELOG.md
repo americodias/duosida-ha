@@ -26,8 +26,11 @@ Requires `duosida-ev` 0.2.0 and Home Assistant 2024.12 or newer.
   upgrade.
 - **Max Charging Current is read from the charger**, so changes made outside
   Home Assistant show up. The charger sometimes ignores this read; then the
-  last value set from Home Assistant, if any, is shown, and the read is retried after
-  1, 2 and 5 minutes, then every 10 minutes.
+  last value set from Home Assistant since Home Assistant started or the
+  integration was reloaded, if any, is shown, and the read is retried after
+  1, 2 and 5 minutes, then every 10 minutes. Until the first answered read or
+  the first change from Home Assistant, the value is unknown: one remembered
+  from before a restart or reload may be out of date.
 - **Commands report failures.** If the charger rejects a command, or it can't
   be sent, the action fails with an error instead of failing silently.
   Automations that change settings often may want `continue_on_error`.

@@ -269,12 +269,20 @@ class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         Only the maximum current is read back (the other configuration fields
         are not verified yet); the rest is the last value written from HA.
+        The maximum current is unknown until it is read or written in this
+        run: a value stored by an earlier run may be stale (the vendor app
+        or the CLI can change it in the meantime).
         """
-        if key == "max_current" and self._configuration is not None:
-            read = self._configuration.max_current
+        if key == "max_current":
+            configuration = self._configuration
+            read = configuration.max_current if configuration is not None else None
             read_at = self._configuration_read_at or 0.0
-            if read is not None and read_at > self._written_at.get(key, 0.0):
+            written_at = self._written_at.get(key)
+            if read is not None and read_at > (written_at or 0.0):
                 return int(read)
+            if written_at is None:
+                return None
+            # Written in this run: _async_set stored it with _written_at.
         return self._stored_settings.get(key)
 
     @callback

@@ -13,7 +13,7 @@ from duosida_ev import (
     DuosidaTimeoutError,
     ValidationError,
 )
-from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 import pytest
@@ -445,6 +445,41 @@ async def test_failed_configuration_read_keeps_the_written_value(
     assert coordinator.get_setting("max_current") == 10
 
 
+async def test_max_current_from_an_earlier_run_is_not_shown(
+    hass: HomeAssistant,
+    hass_storage: dict,
+    config_entry: MockConfigEntry,
+    client: FakeDuosidaClient,
+) -> None:
+    """The maximum current is unknown until read or written in this run.
+
+    The stored value may be stale: the vendor app or the CLI can change it
+    while Home Assistant is not connected.
+    """
+    hass_storage[f"{DOMAIN}.{config_entry.unique_id}"] = {
+        "version": 1,
+        "data": {"max_current": 18},
+    }
+    client.configuration_error = DuosidaTimeoutError("no answer")
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    await run_scheduled_configuration_read(hass)
+
+    coordinator = _coordinator(hass, config_entry)
+    assert _configuration_reads(client) == 1
+    assert coordinator.get_setting("max_current") is None
+    state = hass.states.get(entity("number", "max_charging_current"))
+    assert state.state == STATE_UNKNOWN
+
+    # A write in this run is shown, and still saved for 1.0 to read.
+    await coordinator.async_set_max_current(10)
+    await hass.async_block_till_done()
+    assert coordinator.get_setting("max_current") == 10
+    key = f"{DOMAIN}.{config_entry.unique_id}"
+    assert hass_storage[key]["data"]["max_current"] == 10
+
+
 async def test_setting_without_read_back_comes_from_the_last_write(
     hass: HomeAssistant, init_integration: MockConfigEntry
 ) -> None:
@@ -461,7 +496,7 @@ async def test_settings_are_never_written_on_startup(
     config_entry: MockConfigEntry,
     client: FakeDuosidaClient,
 ) -> None:
-    """Stored settings from 1.0 are shown but not sent to the charger."""
+    """Stored settings are not sent to the charger on startup."""
     hass_storage[f"{DOMAIN}.{config_entry.unique_id}"] = {
         "version": 1,
         "data": {"max_current": 20, "led_brightness": 1, "total_energy": 400.0},
