@@ -20,18 +20,16 @@
         "description": "충전기 세부 정보를 입력하세요",
         "data": {
           "host": "IP 주소",
-          "port": "포트",
-          "device_id": "장치 ID (선택 사항)",
-          "scan_interval": "업데이트 간격 (초)"
+          "port": "포트"
         }
       }
     },
     "error": {
-      "cannot_connect": "충전기 연결 실패",
-      "no_devices_found": "네트워크에서 충전기를 찾을 수 없음"
+      "cannot_connect": "충전기 연결 실패"
     },
     "abort": {
-      "already_configured": "장치가 이미 구성됨"
+      "already_configured": "장치가 이미 구성됨",
+      "no_devices_found": "네트워크에서 충전기를 찾을 수 없음"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "충전 중지"
-      },
-      "reset_energy": {
-        "name": "총 에너지 재설정"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV 충전기 옵션",
         "description": "통합 설정 구성",
         "data": {
-          "scan_interval": "업데이트 간격 (초)",
           "switch_debounce": "충전 스위치 디바운스 (초)"
         },
         "data_description": {
-          "scan_interval": "충전기 상태 업데이트를 폴링하는 빈도",
           "switch_debounce": "명령 전송 후 충전 스위치 상태를 유지하는 시간 (UI 깜박임 방지)"
         }
       }

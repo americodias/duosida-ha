@@ -20,18 +20,16 @@
         "description": "Introduce los detalles de tu cargador",
         "data": {
           "host": "Dirección IP",
-          "port": "Puerto",
-          "device_id": "ID del Dispositivo (opcional)",
-          "scan_interval": "Intervalo de actualización (segundos)"
+          "port": "Puerto"
         }
       }
     },
     "error": {
-      "cannot_connect": "Error al conectar con el cargador",
-      "no_devices_found": "No se encontraron cargadores en la red"
+      "cannot_connect": "Error al conectar con el cargador"
     },
     "abort": {
-      "already_configured": "El dispositivo ya está configurado"
+      "already_configured": "El dispositivo ya está configurado",
+      "no_devices_found": "No se encontraron cargadores en la red"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Detener Carga"
-      },
-      "reset_energy": {
-        "name": "Reiniciar Energía Total"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Opciones del Cargador Duosida EV",
         "description": "Configurar ajustes de la integración",
         "data": {
-          "scan_interval": "Intervalo de actualización (segundos)",
           "switch_debounce": "Antirrebote del interruptor de carga (segundos)"
         },
         "data_description": {
-          "scan_interval": "Con qué frecuencia consultar el cargador para actualizaciones de estado",
           "switch_debounce": "Cuánto tiempo mantener el estado del interruptor de carga después de enviar un comando (evita oscilación en la interfaz)"
         }
       }

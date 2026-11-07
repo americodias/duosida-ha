@@ -20,18 +20,16 @@
         "description": "Entrez les détails de votre chargeur",
         "data": {
           "host": "Adresse IP",
-          "port": "Port",
-          "device_id": "ID du Périphérique (facultatif)",
-          "scan_interval": "Intervalle de mise à jour (secondes)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Échec de la connexion au chargeur",
-      "no_devices_found": "Aucun chargeur trouvé sur le réseau"
+      "cannot_connect": "Échec de la connexion au chargeur"
     },
     "abort": {
-      "already_configured": "Le périphérique est déjà configuré"
+      "already_configured": "Le périphérique est déjà configuré",
+      "no_devices_found": "Aucun chargeur trouvé sur le réseau"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Arrêter la Charge"
-      },
-      "reset_energy": {
-        "name": "Réinitialiser l'Énergie Totale"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Options du Chargeur Duosida EV",
         "description": "Configurer les paramètres de l'intégration",
         "data": {
-          "scan_interval": "Intervalle de mise à jour (secondes)",
           "switch_debounce": "Anti-rebond de l'interrupteur de charge (secondes)"
         },
         "data_description": {
-          "scan_interval": "Fréquence d'interrogation du chargeur pour les mises à jour d'état",
           "switch_debounce": "Durée de maintien de l'état de l'interrupteur de charge après l'envoi d'une commande (évite les oscillations de l'interface)"
         }
       }

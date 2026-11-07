@@ -20,18 +20,16 @@
         "description": "Şarj cihazınızın ayrıntılarını girin",
         "data": {
           "host": "IP Adresi",
-          "port": "Port",
-          "device_id": "Cihaz Kimliği (isteğe bağlı)",
-          "scan_interval": "Güncelleme Aralığı (saniye)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Şarj cihazına bağlanılamadı",
-      "no_devices_found": "Ağda şarj cihazı bulunamadı"
+      "cannot_connect": "Şarj cihazına bağlanılamadı"
     },
     "abort": {
-      "already_configured": "Cihaz zaten yapılandırılmış"
+      "already_configured": "Cihaz zaten yapılandırılmış",
+      "no_devices_found": "Ağda şarj cihazı bulunamadı"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Şarjı Durdur"
-      },
-      "reset_energy": {
-        "name": "Toplam Enerjiyi Sıfırla"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV Şarj Cihazı Seçenekleri",
         "description": "Entegrasyon ayarlarını yapılandır",
         "data": {
-          "scan_interval": "Güncelleme Aralığı (saniye)",
           "switch_debounce": "Şarj anahtarı sıçrama önleme (saniye)"
         },
         "data_description": {
-          "scan_interval": "Şarj cihazının durum güncellemeleri için ne sıklıkta sorgulanacağı",
           "switch_debounce": "Komut gönderildikten sonra şarj anahtarı durumunun ne kadar süre tutulacağı (UI titremesini önler)"
         }
       }

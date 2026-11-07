@@ -11,11 +11,11 @@ Home Assistant integration for **local control** of Duosida EV wall chargers. Th
 - **Real-time Monitoring**: Voltage, current, power, temperature, energy consumption
 - **Charging Control**: Start/stop charging, set max current (6-32A)
 - **Configuration**: LED brightness, direct mode (plug and charge)
-- **3-Phase Support**: Monitor all phases (L1, L2, L3)
+- **Per-phase sensors (L2, L3)**: present but not decoded yet, so they show unknown (disabled by default)
 
 ## Sensors
 
-All sensors update every 10 seconds (configurable).
+The charger pushes its status about every 10 seconds; all sensors update with each push.
 
 | Sensor | Unit | Device Class | State Class | Description |
 |--------|------|--------------|-------------|-------------|
@@ -31,7 +31,7 @@ All sensors update every 10 seconds (configurable).
 | Temperature | °C | temperature | measurement | Charger station temperature |
 | Session Energy | kWh | energy | total_increasing | Energy consumed in current charging session |
 | Session Time | h | duration | measurement | Duration of current charging session |
-| Total Energy | kWh | energy | total_increasing | Total lifetime energy consumption (integrated from power readings) |
+| Total Energy | kWh | energy | total_increasing | The charger's own energy register (survives sessions and restarts) |
 | Model* | - | - | - | Charger model name |
 | Manufacturer* | - | - | - | Manufacturer name |
 | Firmware* | - | - | - | Firmware version |
@@ -52,7 +52,7 @@ All sensors update every 10 seconds (configurable).
 
 | Entity | Range | Step | Description | Default |
 |--------|-------|------|-------------|---------|
-| Max Charging Current | 6-32 A | 1 A | Maximum allowed charging current | Unknown until set |
+| Max Charging Current | 6-32 A | 1 A | Maximum allowed charging current | Read from the charger |
 | LED Brightness* | 0, 1, 3 | - | Screen/LED brightness (0=off, 1=low, 3=high) | Unknown until set |
 | Max Voltage* | 265-290 V | 1 V | Maximum voltage protection threshold | Unknown until set |
 | Min Voltage* | 70-110 V | 1 V | Minimum voltage protection threshold | Unknown until set |
@@ -63,7 +63,6 @@ All sensors update every 10 seconds (configurable).
 
 | Entity | Action | Description |
 |--------|--------|-------------|
-| Reset Total Energy | Resets counter | Reset the total energy counter to zero |
 | Start Charging* | Sends start command | Start charging (alternative to switch) |
 | Stop Charging* | Sends stop command | Stop charging (alternative to switch) |
 
@@ -99,7 +98,7 @@ All sensors update every 10 seconds (configurable).
 
 - Duosida EV wall charger on your local network
 - Network access to TCP port 9988 on the charger
-- Home Assistant 2023.1 or newer
+- Home Assistant 2024.12 or newer
 
 ## Tested On
 
@@ -224,12 +223,12 @@ The Total Energy sensor is automatically compatible with Home Assistant's Energy
 
 ### Why do some settings show "Unknown"?
 
-The integration uses an "unknown-first" approach. Settings like LED brightness, direct mode, and voltage thresholds cannot be read from the charger, so they start as "Unknown" until you explicitly set them. Once set, the values are stored and persist across Home Assistant restarts.
+The maximum charging current is read from the charger. The other settings (LED brightness, direct mode, voltage thresholds, stop on disconnect) are not read back reliably yet, so they start as "Unknown" until you set them from Home Assistant. Once set, the value is remembered across restarts. The integration never writes a setting on its own, for example at startup.
 
 ### What's the difference between Session Energy and Total Energy?
 
 - **Session Energy**: Reported by the charger, resets when you start a new charging session
-- **Total Energy**: Calculated by integrating power over time, never resets automatically (like an odometer)
+- **Total Energy**: The charger's own energy register, which only goes up (like an odometer)
 
 Use Total Energy for the Energy Dashboard and lifetime tracking. Use Session Energy to see how much a single charge consumed.
 
@@ -251,7 +250,7 @@ Yes! This integration communicates directly with your charger over your local ne
 
 ### Can I use this alongside the mobile app?
 
-Yes, both can control the charger simultaneously. However, settings changed in the app won't be reflected in Home Assistant (since the charger doesn't report them back).
+The charger accepts only one local connection at a time, and Home Assistant keeps that connection open. The app may therefore fail to connect locally while the integration is running. If you need the app, disable the integration temporarily. Changes made in the app to the maximum current show up in Home Assistant; other settings don't, because the charger doesn't report them back.
 
 ### What's "Direct Mode"?
 
@@ -283,7 +282,6 @@ Like other configuration settings, the charger doesn't report the current state.
 - Check that TCP port 9988 is accessible from Home Assistant
 - Try pinging the charger IP from Home Assistant host: `ping <charger_ip>`
 - Check firewall rules on your network
-- Verify the device ID is correct (19 digits starting with "03")
 - Try restarting the charger by power cycling it
 
 ### Entities show "Unavailable"
@@ -292,6 +290,9 @@ Like other configuration settings, the charger doesn't report the current state.
 
 **Solutions:**
 - Check the Home Assistant logs: **Settings** → **System** → **Logs**, filter for "duosida"
+- Make sure nothing else holds the charger's single local connection (the mobile app, another integration)
+- After losing the connection, the integration waits before reconnecting (about 35 seconds after a close, then 1 to 5 minutes between failed attempts), because the charger refuses fast reconnects. A reload or a change of options therefore leaves the entities unavailable for about half a minute.
+- Keep **Enable polling for updates** on in the integration's system options: the integration uses that periodic check to reconnect
 - Verify network connectivity to charger
 - Check if charger is responding: `telnet <charger_ip> 9988`
 - Restart the integration: **Settings** → **Devices & Services** → **Duosida** → **⋮** → **Reload**
@@ -302,7 +303,7 @@ Like other configuration settings, the charger doesn't report the current state.
 **Symptoms:** Sensor values frozen or not changing
 
 **Solutions:**
-- Check the scan interval setting (default is 10 seconds)
+- The charger pushes its status about every 10 seconds. If the connection drops, or stays open without sending status, the integration closes it and reconnects; that can take 1 to 3 minutes
 - Enable debug logging to see communication details:
   ```yaml
   logger:
@@ -311,7 +312,6 @@ Like other configuration settings, the charger doesn't report the current state.
   ```
 - Check Home Assistant logs for connection errors
 - Verify charger is actually changing state (e.g., actually charging)
-- Try reducing scan interval if network is slow
 
 ### Settings don't persist
 
@@ -331,7 +331,7 @@ Like other configuration settings, the charger doesn't report the current state.
 1. Clear browser cache (Ctrl+F5 or Cmd+Shift+R)
 2. Restart Home Assistant completely
 3. Check logs for errors
-4. Remove and re-add the integration if necessary (settings will be preserved if using same device ID)
+4. Avoid removing and re-adding the integration: a new entry gets the charger's real device ID, which may differ from the one stored in an entry created by version 1.0. That would change every entity ID and break automations and dashboards that use them.
 
 ### High temperature warnings
 

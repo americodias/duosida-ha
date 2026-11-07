@@ -20,18 +20,16 @@
         "description": "Voer de gegevens van uw oplader in",
         "data": {
           "host": "IP-adres",
-          "port": "Poort",
-          "device_id": "Apparaat-ID (optioneel)",
-          "scan_interval": "Update-interval (seconden)"
+          "port": "Poort"
         }
       }
     },
     "error": {
-      "cannot_connect": "Verbinding met oplader mislukt",
-      "no_devices_found": "Geen opladers gevonden op het netwerk"
+      "cannot_connect": "Verbinding met oplader mislukt"
     },
     "abort": {
-      "already_configured": "Apparaat is al geconfigureerd"
+      "already_configured": "Apparaat is al geconfigureerd",
+      "no_devices_found": "Geen opladers gevonden op het netwerk"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Stop Opladen"
-      },
-      "reset_energy": {
-        "name": "Reset Totale Energie"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV Oplader Opties",
         "description": "Configureer integratie-instellingen",
         "data": {
-          "scan_interval": "Update-interval (seconden)",
           "switch_debounce": "Laadschakelaar debounce (seconden)"
         },
         "data_description": {
-          "scan_interval": "Hoe vaak de oplader om statusupdates wordt gevraagd",
           "switch_debounce": "Hoe lang de laadschakelaartoestand wordt vastgehouden na het verzenden van een opdracht (voorkomt UI-flikkering)"
         }
       }

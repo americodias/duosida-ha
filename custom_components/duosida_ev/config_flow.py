@@ -1,370 +1,239 @@
-"""
-Config flow for Duosida Local integration.
-
-The config flow handles the setup wizard when a user adds the integration.
-It guides the user through:
-1. Choosing between auto-discovery or manual configuration
-2. Selecting a discovered device or entering details manually
-3. Testing the connection
-4. Saving the configuration
-
-Home Assistant automatically shows this flow when the user clicks
-"Add Integration" and selects "Duosida EV Charger (Local)".
-"""
+"""Config flow for the Duosida EV Charger integration."""
 
 from __future__ import annotations
 
 import logging
+import math
+import socket
 from typing import Any
 
-from homeassistant import config_entries
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import callback
-from homeassistant.data_entry_flow import AbortFlow, FlowResult
 import voluptuous as vol
 
-from duosida_ev import DuosidaCharger, discover_chargers
+from duosida_ev import ChargerInfo, DuosidaError, discover_chargers, identify_charger
 
 from .const import (
     CONF_DEVICE_ID,
-    CONF_SCAN_INTERVAL,
     CONF_SWITCH_DEBOUNCE,
     DEFAULT_PORT,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_SWITCH_DEBOUNCE,
     DOMAIN,
 )
+from .coordinator import get_reconnect_gate
 
 _LOGGER = logging.getLogger(__name__)
 
+DISCOVERY_TIMEOUT = 5.0
+IDENTIFY_TIMEOUT = 5.0
 
-class DuosidaLocalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
+
+class ChargerBusy(Exception):
+    """The charger may still hold a session that was just closed."""
+
+    def __init__(self, wait: float) -> None:
+        """Store how long to wait."""
+        super().__init__(f"try again in {wait:.0f} s")
+        self.placeholders = {"seconds": str(math.ceil(wait))}
+
+
+class DuosidaLocalConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Set up a Duosida charger, found by discovery or entered by hand.
+
+    The charger accepts a single TCP session. A charger that already has an
+    entry is never contacted (compared by host and by resolved address). The
+    flow respects the reconnect gate, and each short identification arms it,
+    so neither the flow nor the setup that follows connects while the charger
+    may still hold a session.
     """
-    Handle a config flow for Duosida Local.
 
-    The domain=DOMAIN parameter links this flow to our integration.
-    Home Assistant uses this to know which flow to show.
-    """
-
-    # Schema version - increment if you change the config structure
-    # This allows Home Assistant to migrate old configs
     VERSION = 1
 
     def __init__(self) -> None:
         """Initialize the config flow."""
-        # Store discovered devices between steps
-        self._discovered_devices: list[dict[str, Any]] = []
+        self._discovered: dict[str, ChargerInfo] = {}
 
     @staticmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> OptionsFlowHandler:
-        """
-        Get the options flow handler for this integration.
-
-        This allows users to reconfigure the integration without removing it.
-        Currently supports changing the scan interval.
-
-        Args:
-            config_entry: The config entry to create options flow for
-
-        Returns:
-            OptionsFlowHandler: The options flow handler
-        """
-        return OptionsFlowHandler(config_entry)
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlowHandler:
+        """Return the options flow."""
+        return OptionsFlowHandler()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """
-        Handle the initial step.
-
-        This is called when the user first opens the config flow.
-        We ask if they want to auto-discover or configure manually.
-
-        Args:
-            user_input: Form data if user submitted, None on first display
-
-        Returns:
-            FlowResult: Either show form or proceed to next step
-        """
+    ) -> ConfigFlowResult:
+        """Ask whether to discover chargers or enter one by hand."""
         if user_input is not None:
-            # User submitted the form
-            if user_input.get("discovery"):
-                # User chose auto-discovery
+            if user_input["discovery"]:
                 return await self.async_step_discovery()
-            # User chose manual configuration
             return await self.async_step_manual()
-
-        # Show the initial form
-        # vol.Schema defines the form fields
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    # Checkbox for choosing discovery mode
-                    vol.Required("discovery", default=True): bool,
-                }
-            ),
-            description_placeholders={
-                "discovery_description": "Auto-discover chargers on the network"
-            },
+            data_schema=vol.Schema({vol.Required("discovery", default=True): bool}),
         )
 
     async def async_step_discovery(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """
-        Handle the discovery step.
-
-        This step:
-        1. Scans the network for Duosida chargers
-        2. Shows a list of found devices
-        3. Lets the user select one
-
-        Args:
-            user_input: Selected device if user submitted
-
-        Returns:
-            FlowResult: Show device list or create config entry
-        """
-        errors: dict[str, str] = {}
-
+    ) -> ConfigFlowResult:
+        """Find chargers on the network and let the user pick one."""
         if user_input is not None:
-            # User selected a device from the list
-            selected = user_input["device"]
+            host = user_input["device"]
+            info = self._discovered[host]
+            await self.async_set_unique_id(info.device_id)
+            self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+            return self._async_create(host, DEFAULT_PORT, info)
 
-            # Find the full device info
-            for device in self._discovered_devices:
-                if device["ip"] == selected:
-                    # Check if this device is already configured
-                    await self.async_set_unique_id(device["device_id"])
-                    self._abort_if_unique_id_configured()
-
-                    # Create the config entry
-                    # This saves the configuration and finishes the flow
-                    return self.async_create_entry(
-                        title=f"Duosida {device['ip']}",
-                        data={
-                            CONF_HOST: device["ip"],
-                            CONF_PORT: DEFAULT_PORT,
-                            CONF_DEVICE_ID: device["device_id"],
-                            CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL,
-                        },
-                    )
-
-        # Discover devices on the network
-        # async_add_executor_job runs the blocking discovery in a thread
-        _LOGGER.debug("Starting device discovery")
-        self._discovered_devices = await self.hass.async_add_executor_job(
-            discover_chargers, 5  # 5 second timeout
-        )
-        _LOGGER.debug("Found %d devices", len(self._discovered_devices))
-
-        if not self._discovered_devices:
-            # No devices found - show error
-            return self.async_show_form(
-                step_id="discovery",
-                errors={"base": "no_devices_found"},
+        try:
+            self._discovered = await self._async_discover()
+        except ChargerBusy as err:
+            return self.async_abort(
+                reason="busy", description_placeholders=err.placeholders
             )
-
-        # Build a dictionary for the dropdown
-        # Key is the IP (used as value), value is the display text
-        devices = {
-            device["ip"]: f"{device['ip']} ({device.get('device_id', 'Unknown')})"
-            for device in self._discovered_devices
-        }
-
-        # Show the device selection form
+        if not self._discovered:
+            return self.async_abort(reason="no_devices_found")
         return self.async_show_form(
             step_id="discovery",
             data_schema=vol.Schema(
                 {
-                    # Dropdown menu of discovered devices
-                    vol.Required("device"): vol.In(devices),
+                    vol.Required("device"): vol.In(
+                        {
+                            host: f"{info.model or 'Duosida'} ({host})"
+                            for host, info in self._discovered.items()
+                        }
+                    )
                 }
             ),
-            errors=errors,
         )
+
+    async def _async_discover(self) -> dict[str, ChargerInfo]:
+        """Discover chargers and identify the ones not configured yet.
+
+        Raises ChargerBusy if nothing could be identified because a charger
+        may still hold a recent session.
+        """
+        try:
+            found = await discover_chargers(DISCOVERY_TIMEOUT, identify=False)
+        except DuosidaError as err:
+            _LOGGER.debug("Discovery failed: %s", err)
+            return {}
+        configured = await self._async_configured_addresses()
+        discovered: dict[str, ChargerInfo] = {}
+        busy: ChargerBusy | None = None
+        for charger in found:
+            if charger.host in configured:
+                continue
+            try:
+                info = await self._async_identify(charger.host, DEFAULT_PORT)
+            except ChargerBusy as err:
+                busy = err
+                continue
+            if info is not None:
+                discovered[charger.host] = info
+        if not discovered and busy is not None:
+            raise busy
+        return discovered
 
     async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """
-        Handle manual configuration step.
-
-        This step lets the user enter:
-        - IP address (required)
-        - Port (optional, defaults to 9988)
-        - Device ID (optional, will be retrieved automatically)
-        - Scan interval (optional)
-
-        We test the connection before saving.
-
-        Args:
-            user_input: Form data if user submitted
-
-        Returns:
-            FlowResult: Show form or create config entry
-        """
+    ) -> ConfigFlowResult:
+        """Set up a charger from its address."""
         errors: dict[str, str] = {}
-
+        placeholders: dict[str, str] = {}
         if user_input is not None:
-            # Extract form values
             host = user_input[CONF_HOST]
-            port = user_input.get(CONF_PORT, DEFAULT_PORT)
-            device_id = user_input.get(CONF_DEVICE_ID)
-
-            # Test the connection
+            port = user_input[CONF_PORT]
+            configured = await self._async_configured_addresses()
+            if host in configured or await self._async_resolve(host) in configured:
+                return self.async_abort(reason="already_configured")
             try:
-                _LOGGER.debug("Testing connection to %s:%s", host, port)
-
-                # Create a charger instance
-                # Using lambda because DuosidaCharger.__init__ can't be awaited directly
-                charger = await self.hass.async_add_executor_job(
-                    lambda: DuosidaCharger(
-                        host=host,
-                        port=port,
-                        device_id=device_id or "test",  # Temporary ID for testing
-                        debug=False,
-                    )
-                )
-
-                # Try to connect
-                connected = await self.hass.async_add_executor_job(charger.connect)
-
-                if not connected:
+                info = await self._async_identify(host, port)
+            except ChargerBusy as err:
+                errors["base"] = "busy"
+                placeholders = err.placeholders
+            else:
+                if info is None:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Connection successful
-                    # Get device ID if not provided
-                    if not device_id:
-                        status = await self.hass.async_add_executor_job(
-                            charger.get_status
-                        )
-                        if status:
-                            # The charger object stores the device ID after connection
-                            device_id = charger.device_id
-                            _LOGGER.debug("Retrieved device ID: %s", device_id)
-                        else:
-                            errors["base"] = "cannot_connect"
+                    await self.async_set_unique_id(info.device_id)
+                    self._abort_if_unique_id_configured(updates={CONF_HOST: host})
+                    return self._async_create(host, port, info)
 
-                    # Clean up the test connection
-                    await self.hass.async_add_executor_job(charger.disconnect)
-
-                    if not errors:
-                        # Check if this device is already configured
-                        await self.async_set_unique_id(device_id)
-                        self._abort_if_unique_id_configured()
-
-                        # All good - create the config entry
-                        return self.async_create_entry(
-                            title=f"Duosida {host}",
-                            data={
-                                CONF_HOST: host,
-                                CONF_PORT: port,
-                                CONF_DEVICE_ID: device_id,
-                                CONF_SCAN_INTERVAL: user_input.get(
-                                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                                ),
-                            },
-                        )
-
-            except AbortFlow:
-                # Re-raise abort flow to let it complete the abort
-                raise
-            except Exception as e:
-                _LOGGER.error("Error connecting to charger: %s", e)
-                errors["base"] = "cannot_connect"
-
-        # Show the manual configuration form
         return self.async_show_form(
             step_id="manual",
             data_schema=vol.Schema(
                 {
-                    # Required: IP address
                     vol.Required(CONF_HOST): str,
-                    # Optional: Port with default
-                    vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
-                    # Optional: Device ID (will be auto-detected)
-                    vol.Optional(CONF_DEVICE_ID): str,
-                    # Optional: Update interval with default
-                    vol.Optional(
-                        CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                    ): int,
+                    vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
                 }
             ),
             errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def _async_identify(self, host: str, port: int) -> ChargerInfo | None:
+        """Read the charger's identity over a short session.
+
+        Returns None if the charger doesn't answer; raises ChargerBusy instead
+        of connecting while the reconnect gate is closed.
+        """
+        gate = get_reconnect_gate(self.hass, host)
+        if (wait := gate.wait_time()) > 0:
+            raise ChargerBusy(wait)
+        try:
+            return await identify_charger(host, port, timeout=IDENTIFY_TIMEOUT)
+        except DuosidaError as err:
+            _LOGGER.debug("Cannot identify the charger at %s:%s: %s", host, port, err)
+            return None
+        finally:
+            gate.closed()
+
+    async def _async_configured_addresses(self) -> set[str]:
+        """Hosts of the existing entries, plus the addresses they resolve to."""
+        hosts = {entry.data[CONF_HOST] for entry in self._async_current_entries()}
+        addresses = {await self._async_resolve(host) for host in hosts}
+        return hosts | {address for address in addresses if address is not None}
+
+    async def _async_resolve(self, host: str) -> str | None:
+        try:
+            return await self.hass.async_add_executor_job(socket.gethostbyname, host)
+        except OSError:
+            return None
+
+    @callback
+    def _async_create(
+        self, host: str, port: int, info: ChargerInfo
+    ) -> ConfigFlowResult:
+        return self.async_create_entry(
+            title=f"Duosida {host}",
+            data={CONF_HOST: host, CONF_PORT: port, CONF_DEVICE_ID: info.device_id},
         )
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
-    """
-    Handle options flow for Duosida EV Charger.
-
-    This allows users to reconfigure the integration settings
-    without removing and re-adding the integration.
-
-    Currently supports:
-    - Scan interval (how often to poll the charger)
-    - Switch debounce (how long to ignore updates after sending a command)
-    """
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """
-        Initialize options flow.
-
-        Args:
-            config_entry: The config entry being configured
-        """
-        self.config_entry = config_entry
+class OptionsFlowHandler(OptionsFlow):
+    """Options: the charging switch debounce."""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """
-        Manage the options.
-
-        This is the main (and only) step of the options flow.
-        It shows a form with configurable settings.
-
-        Args:
-            user_input: Form data if submitted, None on first display
-
-        Returns:
-            FlowResult: Either show form or save options
-        """
+    ) -> ConfigFlowResult:
+        """Show and save the options."""
         if user_input is not None:
-            # User submitted the form - save the options
-            # Options are stored separately from the main config
-            # and can be accessed via config_entry.options
-            return self.async_create_entry(title="", data=user_input)
-
-        # Get current settings
-        # First check options (user-configured), then fall back to data (initial config)
-        current_scan_interval = self.config_entry.options.get(
-            CONF_SCAN_INTERVAL,
-            self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            return self.async_create_entry(data=user_input)
+        current = self.config_entry.options.get(
+            CONF_SWITCH_DEBOUNCE, DEFAULT_SWITCH_DEBOUNCE
         )
-        current_switch_debounce = self.config_entry.options.get(
-            CONF_SWITCH_DEBOUNCE,
-            self.config_entry.data.get(CONF_SWITCH_DEBOUNCE, DEFAULT_SWITCH_DEBOUNCE),
-        )
-
-        # Show the options form
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_SCAN_INTERVAL,
-                        default=current_scan_interval,
-                    ): vol.All(int, vol.Range(min=5, max=300)),
-                    vol.Optional(
-                        CONF_SWITCH_DEBOUNCE,
-                        default=current_switch_debounce,
-                    ): vol.All(int, vol.Range(min=5, max=120)),
+                    vol.Optional(CONF_SWITCH_DEBOUNCE, default=current): vol.All(
+                        int, vol.Range(min=5, max=120)
+                    )
                 }
             ),
         )

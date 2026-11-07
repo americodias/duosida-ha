@@ -13,7 +13,7 @@ How sensors work in Home Assistant:
 
 Sensor types:
 - Measurement: Instantaneous values (voltage, current, temperature)
-- Total Increasing: Cumulative values that only go up (energy consumption)
+- Total Increasing: Cumulative values that only go up (energy register)
 """
 
 from __future__ import annotations
@@ -159,8 +159,8 @@ SENSORS: tuple[DuosidaSensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=lambda data: data.get("session_energy"),
     ),
-    # Session time - Duration of current charging session in hours
-    # The charger reports in minutes, we convert to hours for better readability
+    # Session time - Duration of the current session in hours (from the
+    # session start on the charger's clock, which the library keeps right)
     DuosidaSensorEntityDescription(
         key="session_time",
         name="Session Time",
@@ -173,9 +173,8 @@ SENSORS: tuple[DuosidaSensorEntityDescription, ...] = (
             else 0
         ),
     ),
-    # Total energy - Integrated energy consumption over time (always increasing)
-    # This is calculated by integrating power over time and persisted across restarts
-    # Recognized by HA as an energy meter for the Energy Dashboard
+    # Total energy - The charger's own energy register (always increasing,
+    # survives sessions and Home Assistant restarts)
     DuosidaSensorEntityDescription(
         key="total_energy",
         name="Total Energy",

@@ -7,7 +7,6 @@ Unlike switches, they don't have an on/off state - they just execute an action.
 This integration provides:
 1. Start Charging button - Send start command
 2. Stop Charging button - Send stop command
-3. Reset Total Energy button - Reset the total energy counter to zero
 
 These are alternatives to the charging switch, useful for:
 - Automation triggers
@@ -42,7 +41,6 @@ async def async_setup_entry(
         [
             DuosidaStartButton(coordinator, device_id),
             DuosidaStopButton(coordinator, device_id),
-            DuosidaResetEnergyButton(coordinator, device_id),
         ]
     )
 
@@ -112,37 +110,3 @@ class DuosidaStopButton(DuosidaEntity, ButtonEntity):
         Stops any active charging session.
         """
         await self.coordinator.async_stop_charging()
-
-
-class DuosidaResetEnergyButton(DuosidaEntity, ButtonEntity):
-    """
-    Button to reset the total energy counter.
-
-    When pressed, resets the total energy sensor to zero.
-    This is useful for starting fresh tracking at the beginning
-    of a billing period or when you want to track a specific period.
-
-    The session energy (from the charger) is not affected by this reset.
-    Only the integrated total energy counter is reset.
-    """
-
-    _attr_name = "Reset Total Energy"
-    _attr_icon = "mdi:restart"
-    _attr_entity_registry_enabled_default = True
-
-    def __init__(
-        self,
-        coordinator: DuosidaDataUpdateCoordinator,
-        device_id: str,
-    ) -> None:
-        """Initialize the reset energy button."""
-        super().__init__(coordinator, device_id)
-        self._attr_unique_id = f"{device_id}_reset_energy"
-
-    async def async_press(self) -> None:
-        """
-        Handle the button press.
-
-        Resets the total energy counter to zero and refreshes the entities.
-        """
-        await self.coordinator.async_reset_total_energy()

@@ -20,18 +20,16 @@
         "description": "充電器の詳細を入力してください",
         "data": {
           "host": "IP アドレス",
-          "port": "ポート",
-          "device_id": "デバイス ID（オプション）",
-          "scan_interval": "更新間隔（秒）"
+          "port": "ポート"
         }
       }
     },
     "error": {
-      "cannot_connect": "充電器への接続に失敗しました",
-      "no_devices_found": "ネットワーク上に充電器が見つかりませんでした"
+      "cannot_connect": "充電器への接続に失敗しました"
     },
     "abort": {
-      "already_configured": "デバイスは既に設定されています"
+      "already_configured": "デバイスは既に設定されています",
+      "no_devices_found": "ネットワーク上に充電器が見つかりませんでした"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "充電停止"
-      },
-      "reset_energy": {
-        "name": "総エネルギーをリセット"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV 充電器オプション",
         "description": "統合設定を構成",
         "data": {
-          "scan_interval": "更新間隔（秒）",
           "switch_debounce": "充電スイッチデバウンス（秒）"
         },
         "data_description": {
-          "scan_interval": "充電器のステータス更新をポーリングする頻度",
           "switch_debounce": "コマンド送信後に充電スイッチの状態を保持する時間（UIのちらつきを防止）"
         }
       }

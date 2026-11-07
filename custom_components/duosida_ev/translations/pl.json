@@ -20,18 +20,16 @@
         "description": "Wprowadź szczegóły swojej ładowarki",
         "data": {
           "host": "Adres IP",
-          "port": "Port",
-          "device_id": "ID Urządzenia (opcjonalnie)",
-          "scan_interval": "Interwał aktualizacji (sekundy)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Nie udało się połączyć z ładowarką",
-      "no_devices_found": "Nie znaleziono ładowarek w sieci"
+      "cannot_connect": "Nie udało się połączyć z ładowarką"
     },
     "abort": {
-      "already_configured": "Urządzenie jest już skonfigurowane"
+      "already_configured": "Urządzenie jest już skonfigurowane",
+      "no_devices_found": "Nie znaleziono ładowarek w sieci"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Zatrzymaj Ładowanie"
-      },
-      "reset_energy": {
-        "name": "Zresetuj Całkowitą Energię"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Opcje Ładowarki Duosida EV",
         "description": "Skonfiguruj ustawienia integracji",
         "data": {
-          "scan_interval": "Interwał aktualizacji (sekundy)",
           "switch_debounce": "Debounce przełącznika ładowania (sekundy)"
         },
         "data_description": {
-          "scan_interval": "Jak często odpytywać ładowarkę o aktualizacje stanu",
           "switch_debounce": "Jak długo utrzymywać stan przełącznika ładowania po wysłaniu polecenia (zapobiega migotaniu interfejsu)"
         }
       }

@@ -79,7 +79,7 @@ class DuosidaEntity(CoordinatorEntity[DuosidaDataUpdateCoordinator]):
             # Uses a set of tuples: {(domain, id)}
             identifiers={(DOMAIN, self._device_id)},
             # Display name for the device
-            name=f"{NAME} {self.coordinator.charger.host}",
+            name=f"{NAME} {self.coordinator.client.host}",
             # Device metadata from charger response
             manufacturer=data.get("manufacturer") or "Duosida",
             model=data.get("model") or "SmartChargePI",

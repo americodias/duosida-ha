@@ -20,18 +20,16 @@
         "description": "输入您的充电器详细信息",
         "data": {
           "host": "IP 地址",
-          "port": "端口",
-          "device_id": "设备 ID（可选）",
-          "scan_interval": "更新间隔（秒）"
+          "port": "端口"
         }
       }
     },
     "error": {
-      "cannot_connect": "无法连接到充电器",
-      "no_devices_found": "网络上未发现充电器"
+      "cannot_connect": "无法连接到充电器"
     },
     "abort": {
-      "already_configured": "设备已配置"
+      "already_configured": "设备已配置",
+      "no_devices_found": "网络上未发现充电器"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "停止充电"
-      },
-      "reset_energy": {
-        "name": "重置总能量"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV 充电器选项",
         "description": "配置集成设置",
         "data": {
-          "scan_interval": "更新间隔（秒）",
           "switch_debounce": "充电开关防抖（秒）"
         },
         "data_description": {
-          "scan_interval": "多久查询一次充电器状态更新",
           "switch_debounce": "发送命令后保持充电开关状态的时长（防止界面闪烁）"
         }
       }

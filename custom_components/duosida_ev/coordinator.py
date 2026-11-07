@@ -1,713 +1,388 @@
-"""
-Data update coordinator for Duosida Local.
+"""Data update coordinator for the Duosida EV Charger integration.
 
-The coordinator is a central piece of Home Assistant integrations. It:
-1. Fetches data from the device at regular intervals
-2. Stores the latest data
-3. Notifies all entities when new data arrives
-4. Handles connection errors and retries
-5. Persists configuration settings that the charger doesn't report back
+The coordinator keeps one persistent session with the charger. The charger
+pushes its status about every 10 s; each new status updates all entities.
 
-This pattern ensures:
-- Only one connection to the device (not one per entity)
-- All entities update simultaneously
-- Proper error handling in one place
-- Settings are synchronized between HA and charger
+The periodic refresh is a watchdog. While pushes arrive it never runs (each
+push resets its timer). When the session is down it reconnects, and when the
+session stays silent it closes it so the next refresh can reconnect.
 
-How it works:
-1. On startup, load persisted settings from HA storage
-2. Connect to charger and sync settings
-3. Home Assistant calls _async_update_data() every scan_interval seconds
-4. We fetch status from the charger
-5. All entities automatically get notified and update their state
+The charger accepts a single session, keeps it busy for a while after any
+close and refuses fast reconnects. ``ReconnectGate`` (one per host, shared
+with the config flow) decides when the next connection may be opened.
+
+Settings are written to the charger, which confirms or rejects each write.
+The maximum current is also read back from the charger (at connect and every
+few minutes). The other settings are not read back reliably yet, so the
+integration remembers the last value written from Home Assistant. It never
+writes settings on its own (for example on startup).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import time
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from duosida_ev import DuosidaCharger
+from duosida_ev import (
+    ChargerConfiguration,
+    ChargerStatus,
+    CommandRejectedError,
+    DuosidaClient,
+    DuosidaError,
+)
 
 from .const import (
+    CONFIGURATION_REFRESH_INTERVAL,
     DOMAIN,
-    INITIAL_RETRY_DELAY,
-    MAX_RETRY_ATTEMPTS,
-    MAX_RETRY_DELAY,
-    RETRY_BACKOFF_MULTIPLIER,
+    RECONNECT_BACKOFF,
+    RECONNECT_GATES,
+    SESSION_RELEASE_DELAY,
+    SILENT_REFRESHES_BEFORE_RECONNECT,
+    STATUS_TIMEOUT,
+    WATCHDOG_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# Storage version - increment if storage format changes
 STORAGE_VERSION = 1
 
 
+@dataclass
+class ReconnectGate:
+    """When the next connection to one charger may be opened."""
+
+    failures: int = 0
+    next_attempt: float = 0.0
+
+    def wait_time(self) -> float:
+        """Seconds until the next attempt is allowed."""
+        return max(0.0, self.next_attempt - time.monotonic())
+
+    def failed(self) -> int:
+        """Record a failed attempt and return the delay before the next one."""
+        delay = RECONNECT_BACKOFF[min(self.failures, len(RECONNECT_BACKOFF) - 1)]
+        self.failures += 1
+        self.next_attempt = max(self.next_attempt, time.monotonic() + delay)
+        return delay
+
+    def closed(self) -> None:
+        """A session just ended; the charger keeps it busy for a while."""
+        self.next_attempt = max(
+            self.next_attempt, time.monotonic() + SESSION_RELEASE_DELAY
+        )
+
+    def succeeded(self) -> None:
+        """A session delivered a status: reset the backoff."""
+        self.failures = 0
+        self.next_attempt = 0.0
+
+
+def get_reconnect_gate(hass: HomeAssistant, host: str) -> ReconnectGate:
+    """The gate for a charger, kept across setups, reloads and config flows."""
+    gates: dict[str, ReconnectGate] = hass.data.setdefault(DOMAIN, {}).setdefault(
+        RECONNECT_GATES, {}
+    )
+    return gates.setdefault(host, ReconnectGate())
+
+
 class DuosidaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """
-    Class to manage fetching Duosida data.
+    """Keep one session with the charger and share its pushed status."""
 
-    Inherits from DataUpdateCoordinator which provides:
-    - Automatic polling at specified interval
-    - Error handling and retry logic
-    - Listener management for entities
-
-    The generic type [dict[str, Any]] indicates this coordinator
-    stores data as a dictionary (the charger status).
-    """
+    config_entry: ConfigEntry
 
     def __init__(
         self,
         hass: HomeAssistant,
-        charger: DuosidaCharger,
-        scan_interval: int,
+        entry: ConfigEntry,
+        client: DuosidaClient,
         device_id: str,
-        switch_debounce: int = 30,
+        switch_debounce: int,
     ) -> None:
-        """
-        Initialize the coordinator.
-
-        Args:
-            hass: Home Assistant instance
-            charger: The DuosidaCharger instance for communication
-            scan_interval: How often to fetch data (in seconds)
-            device_id: Device ID for storage key
-            switch_debounce: Debounce time for charging switch (in seconds)
-        """
-        # Initialize the parent class
-        # This sets up the polling mechanism
+        """Initialize the coordinator."""
         super().__init__(
             hass,
             _LOGGER,
-            name=DOMAIN,  # Used in log messages
-            update_interval=timedelta(seconds=scan_interval),
+            config_entry=entry,
+            name=DOMAIN,
+            update_interval=timedelta(seconds=WATCHDOG_INTERVAL),
         )
-
-        # Store the charger instance for later use
-        self.charger = charger
-
-        # Store the switch debounce time (in seconds)
-        # Used by charging switch to prevent UI bounce during state transitions
+        self.client = client
         self.switch_debounce = switch_debounce
-
-        # Track if we've done initial settings sync
-        # Connection is now opened/closed for each operation
-
-        # Device ID for storage
-        self._device_id = device_id
-
-        # Storage for persisting settings that charger doesn't report back
-        # Key format: duosida_ev.{device_id}
-        self._store = Store(
-            hass,
-            STORAGE_VERSION,
-            f"{DOMAIN}.{device_id}",
+        self._gate = get_reconnect_gate(hass, client.host)
+        self._store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, f"{DOMAIN}.{device_id}"
         )
+        # Unknown keys (such as the 1.0 energy integration state) are kept as
+        # they are, so going back to an older version loses nothing.
+        self._stored_settings: dict[str, Any] = {}
+        self._configuration: ChargerConfiguration | None = None
+        self._configuration_read_at: float | None = None
+        self._configuration_attempted_at: float | None = None
+        self._written_at: dict[str, float] = {}
+        # The client keeps its last status after a disconnect and notifies on
+        # every change; only a status object not seen before is published.
+        self._last_status: ChargerStatus | None = None
+        self._silent_refreshes = 0
+        self._remove_listener = client.add_listener(self._handle_client_update)
 
-        # Current stored settings (loaded from storage)
-        # These are settings the charger doesn't report back
-        # Initially None because we don't know the charger's actual configuration
-        # Values are only stored when the user explicitly changes them in HA
-        self._stored_settings: dict[str, Any] = {
-            "max_current": None,  # Unknown until user sets it
-            "led_brightness": None,  # Unknown until user sets it
-            "direct_mode": None,  # Unknown until user sets it
-            "stop_on_disconnect": None,  # Unknown until user sets it
-            "max_voltage": None,  # Unknown until user sets it
-            "min_voltage": None,  # Unknown until user sets it
-            "total_energy": 0.0,  # Total energy consumed (kWh) - integrated from power
-            "last_power": 0.0,  # Last power reading (W) for integration
-            "last_update_time": None,  # Last update timestamp for integration
-        }
-
-        # Flag to track if we've synced user settings on first connection after HA restart
-        # This prevents re-syncing on every poll (every 10 seconds)
-        # Only user-set values (non-None) are synced
-        self._settings_synced_this_session = False
+    # ------------------------------------------------------------ lifecycle
 
     async def async_load_stored_settings(self) -> None:
-        """
-        Load stored settings from Home Assistant storage.
-
-        This should be called during setup, before the first refresh.
-        Settings are stored in .storage/duosida_ev.{device_id}
-        """
-        stored = await self._store.async_load()
-
-        if stored:
-            _LOGGER.debug("Loaded stored settings: %s", stored)
-            # Merge with defaults (in case new settings were added)
-            self._stored_settings.update(stored)
-        else:
-            _LOGGER.debug("No stored settings found, using defaults")
-
-    async def _async_save_stored_settings(self) -> None:
-        """
-        Save current settings to Home Assistant storage.
-
-        Called whenever a setting is changed to persist it.
-        """
-        await self._store.async_save(self._stored_settings)
-        _LOGGER.debug("Saved settings to storage: %s", self._stored_settings)
-
-    async def _async_sync_settings_to_charger(self) -> None:
-        """
-        Sync stored settings to the charger.
-
-        Called on first successful connection to restore settings that
-        the user has explicitly configured in Home Assistant.
-
-        IMPORTANT: Only syncs values that are not None (i.e., values the user
-        has explicitly set). We don't sync default values because we don't
-        know what the charger's actual configuration is.
-        """
-        settings_to_sync = []
-
-        # Sync max charging current (only if user has set it)
-        max_current = self._stored_settings.get("max_current")
-        if max_current is not None:
-            settings_to_sync.append(f"max current: {max_current}A")
-            await self.hass.async_add_executor_job(
-                self.charger.set_max_current, max_current
-            )
-
-        # Sync LED brightness (only if user has set it)
-        led_brightness = self._stored_settings.get("led_brightness")
-        if led_brightness is not None:
-            settings_to_sync.append(f"LED brightness: {led_brightness}")
-            await self.hass.async_add_executor_job(
-                self.charger.set_led_brightness, led_brightness
-            )
-
-        # Sync direct work mode (only if user has set it)
-        direct_mode = self._stored_settings.get("direct_mode")
-        if direct_mode is not None:
-            settings_to_sync.append(f"direct mode: {direct_mode}")
-            await self.hass.async_add_executor_job(
-                self.charger.set_direct_work_mode, direct_mode
-            )
-
-        # Sync stop on disconnect (only if user has set it)
-        stop_on_disconnect = self._stored_settings.get("stop_on_disconnect")
-        if stop_on_disconnect is not None:
-            settings_to_sync.append(f"stop on disconnect: {stop_on_disconnect}")
-            await self.hass.async_add_executor_job(
-                self.charger.set_stop_on_disconnect, stop_on_disconnect
-            )
-
-        # Sync max voltage (only if user has set it)
-        max_voltage = self._stored_settings.get("max_voltage")
-        if max_voltage is not None:
-            settings_to_sync.append(f"max voltage: {max_voltage}V")
-            await self.hass.async_add_executor_job(
-                self.charger.set_max_voltage, max_voltage
-            )
-
-        # Sync min voltage (only if user has set it)
-        min_voltage = self._stored_settings.get("min_voltage")
-        if min_voltage is not None:
-            settings_to_sync.append(f"min voltage: {min_voltage}V")
-            await self.hass.async_add_executor_job(
-                self.charger.set_min_voltage, min_voltage
-            )
-
-        if settings_to_sync:
-            _LOGGER.info(
-                "Synced user-configured settings to charger: %s",
-                ", ".join(settings_to_sync),
-            )
-        else:
-            _LOGGER.info(
-                "No user-configured settings to sync (charger retains its current configuration)"
-            )
-
-    def get_stored_setting(self, key: str) -> Any:
-        """
-        Get a stored setting value.
-
-        Args:
-            key: Setting key (e.g., "led_brightness", "direct_mode")
-
-        Returns:
-            The stored value, or None if not found
-        """
-        return self._stored_settings.get(key)
-
-    async def _async_connect_with_retry(self) -> bool:
-        """
-        Connect to charger with exponential backoff retry logic.
-
-        Implements auto-recovery from transient network errors by:
-        1. Attempting connection up to MAX_RETRY_ATTEMPTS times
-        2. Using exponential backoff between attempts (1s, 2s, 4s, ...)
-        3. Logging each attempt for troubleshooting
-
-        This significantly improves reliability when:
-        - Network is temporarily unstable
-        - Charger is briefly unresponsive
-        - Router is recovering from restart
-
-        Returns:
-            True if connection succeeded, False if all retries exhausted
-
-        Raises:
-            No exceptions - returns False on failure
-        """
-        import asyncio
-
-        retry_delay = INITIAL_RETRY_DELAY
-
-        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-            try:
-                _LOGGER.debug(
-                    "Connection attempt %d/%d to charger at %s",
-                    attempt,
-                    MAX_RETRY_ATTEMPTS,
-                    self.charger.host,
-                )
-
-                connected = await self.hass.async_add_executor_job(self.charger.connect)
-
-                if connected:
-                    if attempt > 1:
-                        _LOGGER.info(
-                            "Successfully connected to charger on attempt %d/%d",
-                            attempt,
-                            MAX_RETRY_ATTEMPTS,
-                        )
-                    return True
-
-                # Connection failed, prepare for retry
-                if attempt < MAX_RETRY_ATTEMPTS:
-                    _LOGGER.warning(
-                        "Connection attempt %d/%d failed, retrying in %.1fs",
-                        attempt,
-                        MAX_RETRY_ATTEMPTS,
-                        retry_delay,
-                    )
-                    await asyncio.sleep(retry_delay)
-
-                    # Exponential backoff with cap
-                    retry_delay = min(
-                        retry_delay * RETRY_BACKOFF_MULTIPLIER, MAX_RETRY_DELAY
-                    )
-                else:
-                    _LOGGER.error(
-                        "All %d connection attempts failed", MAX_RETRY_ATTEMPTS
-                    )
-
-            except Exception as err:
-                _LOGGER.debug(
-                    "Connection attempt %d/%d raised exception: %s",
-                    attempt,
-                    MAX_RETRY_ATTEMPTS,
-                    err,
-                )
-
-                if attempt < MAX_RETRY_ATTEMPTS:
-                    _LOGGER.warning(
-                        "Connection error on attempt %d/%d, retrying in %.1fs: %s",
-                        attempt,
-                        MAX_RETRY_ATTEMPTS,
-                        retry_delay,
-                        err,
-                    )
-                    await asyncio.sleep(retry_delay)
-                    retry_delay = min(
-                        retry_delay * RETRY_BACKOFF_MULTIPLIER, MAX_RETRY_DELAY
-                    )
-                else:
-                    _LOGGER.error(
-                        "Connection failed after %d attempts: %s",
-                        MAX_RETRY_ATTEMPTS,
-                        err,
-                    )
-
-        return False
+        """Load the settings remembered from earlier writes."""
+        self._stored_settings = await self._store.async_load() or {}
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """
-        Fetch data from the charger.
-
-        This method is called automatically by the parent class
-        at the interval specified in update_interval.
-
-        Opens a connection, gets status, and closes connection each time.
-        This is more reliable for chargers with limited connection handling.
-
-        Returns:
-            Dictionary containing charger status data
-
-        Raises:
-            UpdateFailed: If we can't get data from the charger
-                         (causes HA to show entity as unavailable)
-        """
+        """Watchdog: reconnect if needed and return a current status."""
+        reconnected = False
+        if not self.client.connected:
+            await self._async_connect()
+            reconnected = True
         try:
-            # Connect to charger with retry logic
-            connected = await self._async_connect_with_retry()
-
-            if not connected:
-                raise UpdateFailed(
-                    f"Failed to connect to charger after {MAX_RETRY_ATTEMPTS} attempts"
+            if reconnected:
+                # A status from before the reconnect would look current.
+                status = await self.client.wait_for_status(timeout=STATUS_TIMEOUT)
+            else:
+                status = await self.client.get_status(
+                    max_age=WATCHDOG_INTERVAL, timeout=STATUS_TIMEOUT
                 )
+        except DuosidaError as err:
+            if reconnected:
+                self._gate.failed()
+            await self._async_handle_silence()
+            raise UpdateFailed(f"No status from the charger: {err}") from err
+        self._gate.succeeded()
+        self._silent_refreshes = 0
+        self._last_status = status
+        if self._configuration_due():
+            await self._async_refresh_configuration()
+        return self._build_data(status)
 
-            try:
-                # Small delay after connect - charger needs time to be ready
-                import asyncio
-
-                await asyncio.sleep(0.3)
-                _LOGGER.debug("Connection ready, starting data fetch")
-
-                # Sync user-configured settings on first successful connection after HA restart
-                # Only syncs values that the user has explicitly set (non-None values)
-                if not self._settings_synced_this_session:
-                    await self._async_sync_settings_to_charger()
-                    self._settings_synced_this_session = True
-
-                # Get the current status from the charger
-                _LOGGER.debug("Requesting status from charger")
-                status = await self.hass.async_add_executor_job(self.charger.get_status)
-
-                if not status:
-                    _LOGGER.warning("Charger returned no status")
-                    raise UpdateFailed("Failed to get status from charger")
-
-                # Convert the ChargerStatus object to a dictionary
-                data = status.to_dict()
-                _LOGGER.debug(
-                    "Got status: state=%s, voltage=%.1fV, current=%.2fA, power=%.0fW",
-                    data.get("state"),
-                    data.get("voltage", 0),
-                    data.get("current", 0),
-                    data.get("power", 0),
-                )
-
-                # Integrate power over time to calculate total energy
-                # This creates an always-increasing energy meter for HA Energy Dashboard
-                current_power = data.get("power", 0.0) or 0.0
-                current_time = self.hass.loop.time()
-
-                # Get stored values
-                last_power = self._stored_settings.get("last_power", 0.0) or 0.0
-                last_time = self._stored_settings.get("last_update_time")
-                total_energy = self._stored_settings.get("total_energy", 0.0) or 0.0
-
-                # Calculate energy delta using trapezoidal integration
-                # Energy (kWh) = Average Power (W) * Time (hours)
-                if last_time is not None and current_time > last_time:
-                    time_delta_hours = (current_time - last_time) / 3600.0
-                    average_power = (current_power + last_power) / 2.0
-                    energy_delta = (
-                        average_power * time_delta_hours
-                    ) / 1000.0  # Convert W to kW
-
-                    # Only add positive energy (ignore negative spikes from bad readings)
-                    if (
-                        energy_delta > 0 and energy_delta < 100
-                    ):  # Sanity check: < 100 kWh per interval
-                        total_energy += energy_delta
-                        _LOGGER.debug(
-                            "Energy integration: %.3f kWh (avg power: %.1f W, time: %.3f h)",
-                            energy_delta,
-                            average_power,
-                            time_delta_hours,
-                        )
-
-                # Update stored state
-                self._stored_settings["total_energy"] = total_energy
-                self._stored_settings["last_power"] = current_power
-                self._stored_settings["last_update_time"] = current_time
-
-                # Save to storage (async, fire and forget to avoid blocking)
-                self.hass.async_create_task(self._async_save_stored_settings())
-
-                # Add total_energy to data
-                data["total_energy"] = total_energy
-
-                return data
-
-            finally:
-                # Always disconnect after getting status
-                await self.hass.async_add_executor_job(self.charger.disconnect)
-                _LOGGER.debug("Disconnected from charger")
-
-        except UpdateFailed:
-            raise
-        except Exception as err:
-            _LOGGER.error("Error communicating with charger: %s", err)
-            raise UpdateFailed(f"Error communicating with charger: {err}") from err
-
-    async def _async_send_command(
-        self, command_func: Callable[[], bool], command_name: str
-    ) -> bool:
-        """
-        Send a command to the charger with connect/disconnect.
-
-        Args:
-            command_func: The charger method to call
-            command_name: Name for logging
-
-        Returns:
-            True if command was sent successfully
-        """
+    async def _async_connect(self) -> None:
+        if (wait := self._gate.wait_time()) > 0:
+            raise UpdateFailed(
+                f"Waiting {wait:.0f} s before reconnecting to the charger"
+            )
         try:
-            _LOGGER.info("Sending %s command", command_name)
+            await self.client.connect()
+        except DuosidaError as err:
+            delay = self._gate.failed()
+            raise UpdateFailed(
+                f"Cannot connect to the charger: {err} (next attempt in {delay} s)"
+            ) from err
+        self._configuration_attempted_at = None
 
-            # Connect with retry logic
-            connected = await self._async_connect_with_retry()
-            if not connected:
-                _LOGGER.error(
-                    "Failed to connect for %s after %d attempts",
-                    command_name,
-                    MAX_RETRY_ATTEMPTS,
+    async def _async_handle_silence(self) -> None:
+        """Close a session that stays connected but sends no status.
+
+        Keepalives can hold a session open after the charger stopped pushing
+        status; closing it lets the next refresh reconnect.
+        """
+        if not self.client.connected:
+            return
+        self._silent_refreshes += 1
+        if self._silent_refreshes >= SILENT_REFRESHES_BEFORE_RECONNECT:
+            self._silent_refreshes = 0
+            await self.client.disconnect()
+
+    @callback
+    def _handle_client_update(self) -> None:
+        """Called by the client on every status push or connection change."""
+        if not self.client.connected:
+            self._gate.closed()
+            if self.data is not None and self.last_update_success:
+                self.async_set_update_error(
+                    UpdateFailed("Connection to the charger lost")
                 )
-                return False
+            return
+        status = self.client.status
+        if status is None or status is self._last_status:
+            return
+        self._last_status = status
+        self._silent_refreshes = 0
+        self.async_set_updated_data(self._build_data(status))
+        if self._configuration_due():
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_refresh_configuration_in_background(),
+                f"{DOMAIN} configuration refresh",
+            )
 
-            try:
-                # Small delay after connect - charger needs time to be ready
-                import asyncio
+    async def async_disconnect(self) -> None:
+        """Close the session cleanly. Safe to call more than once."""
+        self._remove_listener()
+        was_connected = self.client.connected
+        await self.client.disconnect()
+        # Only a session that was open keeps the charger busy; a setup retry
+        # that never connected must not push the next attempt further away.
+        if was_connected:
+            self._gate.closed()
 
-                await asyncio.sleep(0.3)
+    async def async_shutdown(self) -> None:
+        """Stop the watchdog and close the session (unload, failed setup)."""
+        await super().async_shutdown()
+        await self.async_disconnect()
 
-                # Send command
-                result = await self.hass.async_add_executor_job(command_func)
-                return result
-            finally:
-                # Always disconnect
-                await self.hass.async_add_executor_job(self.charger.disconnect)
+    # ------------------------------------------------------------ data
 
-        except Exception as err:
-            _LOGGER.error("Error in %s: %s", command_name, err)
-            return False
+    def _build_data(self, status: ChargerStatus) -> dict[str, Any]:
+        """Map a status to the keys the entities have always used."""
+        info = self.client.info
+        duration = status.session_duration
+        return {
+            "conn_status": status.raw_state,
+            "voltage": status.voltage,
+            "current": status.current,
+            "power": status.power,
+            "total_energy": status.total_energy,
+            "session_energy": status.session_energy,
+            "session_time": int(duration.total_seconds() // 60) if duration else 0,
+            "temperature_station": status.temperature,
+            "cp_voltage": status.cp_voltage,
+            # Not decoded by the library.
+            "voltage_l2": None,
+            "voltage_l3": None,
+            "current_l2": None,
+            "current_l3": None,
+            "model": info.model if info else None,
+            "manufacturer": info.manufacturer if info else None,
+            "firmware": info.firmware if info else None,
+        }
 
-    async def async_start_charging(self) -> bool:
+    def get_setting(self, key: str) -> Any:
+        """Value of a charger setting: the newer of the last read and last write.
+
+        Only the maximum current is read back (the other configuration fields
+        are not verified yet); the rest is the last value written from HA.
         """
-        Start charging the vehicle.
+        if key == "max_current" and self._configuration is not None:
+            read = self._configuration.max_current
+            read_at = self._configuration_read_at or 0.0
+            if read is not None and read_at > self._written_at.get(key, 0.0):
+                return int(read)
+        return self._stored_settings.get(key)
 
-        Returns:
-            True if command was sent successfully
-        """
-        result = await self._async_send_command(
-            self.charger.start_charging, "start charging"
+    def _configuration_due(self) -> bool:
+        return (
+            self._configuration_attempted_at is None
+            or time.monotonic() - self._configuration_attempted_at
+            > CONFIGURATION_REFRESH_INTERVAL
         )
 
-        if result:
-            # Wait for charger to update state, then refresh
-            import asyncio
+    async def _async_refresh_configuration(self) -> None:
+        self._configuration_attempted_at = time.monotonic()
+        try:
+            configuration = await self.client.get_configuration()
+        except DuosidaError as err:
+            _LOGGER.debug("Cannot read the charger configuration: %s", err)
+            return
+        self._configuration = configuration
+        self._configuration_read_at = time.monotonic()
 
-            await asyncio.sleep(1.0)
-            await self.async_request_refresh()
+    async def _async_refresh_configuration_in_background(self) -> None:
+        await self._async_refresh_configuration()
+        self.async_update_listeners()
 
-        return result
+    # ------------------------------------------------------------ commands
 
-    async def async_stop_charging(self) -> bool:
-        """
-        Stop charging the vehicle.
+    async def _async_command(
+        self, description: str, command: Callable[[], Awaitable[Any]]
+    ) -> None:
+        if not self.client.connected:
+            raise HomeAssistantError(
+                f"Cannot {description}: the charger is not connected"
+            )
+        try:
+            await command()
+        except CommandRejectedError as err:
+            raise HomeAssistantError(
+                f"The charger rejected the request to {description} ({err.status_name})"
+            ) from err
+        except DuosidaError as err:
+            raise HomeAssistantError(f"Cannot {description}: {err}") from err
 
-        Returns:
-            True if command was sent successfully
-        """
-        result = await self._async_send_command(
-            self.charger.stop_charging, "stop charging"
+    async def _async_set(
+        self,
+        key: str,
+        value: Any,
+        description: str,
+        command: Callable[[], Awaitable[Any]],
+    ) -> None:
+        await self._async_command(description, command)
+        # The charger's answer to the command is the confirmation; no read-back
+        # (load-management automations write the current every minute or so).
+        self._stored_settings[key] = value
+        self._written_at[key] = time.monotonic()
+        await self._store.async_save(self._stored_settings)
+        self.async_update_listeners()
+
+    async def async_start_charging(self) -> None:
+        """Ask the charger to start charging; the state follows in a push."""
+        await self._async_command("start charging", self.client.start_charging)
+
+    async def async_stop_charging(self) -> None:
+        """Ask the charger to stop charging; the state follows in a push."""
+        await self._async_command("stop charging", self.client.stop_charging)
+
+    async def async_set_max_current(self, current: int) -> None:
+        """Set the maximum charging current (6-32 A)."""
+        await self._async_set(
+            "max_current",
+            current,
+            f"set the maximum current to {current} A",
+            lambda: self.client.set_max_current(current),
         )
 
-        if result:
-            # Wait for charger to update state, then refresh
-            import asyncio
-
-            await asyncio.sleep(1.0)
-            await self.async_request_refresh()
-
-        return result
-
-    async def async_set_max_current(self, current: int) -> bool:
-        """
-        Set the maximum charging current.
-
-        Args:
-            current: Current in amperes (6-32)
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        result = await self._async_send_command(
-            partial(self.charger.set_max_current, current),
-            f"set max current to {current}A",
+    async def async_set_led_brightness(self, level: int) -> None:
+        """Set the LED brightness (0 off, 1 low, 3 high)."""
+        await self._async_set(
+            "led_brightness",
+            level,
+            f"set the LED brightness to {level}",
+            lambda: self.client.set_led_brightness(level),
         )
 
-        if result:
-            # Persist the setting
-            self._stored_settings["max_current"] = current
-            await self._async_save_stored_settings()
-
-            import asyncio
-
-            await asyncio.sleep(0.5)
-            await self.async_request_refresh()
-
-        return result
-
-    async def async_set_led_brightness(self, level: int) -> bool:
-        """
-        Set LED/screen brightness level.
-
-        Args:
-            level: Brightness (0=off, 1=low, 3=high)
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        result = await self._async_send_command(
-            partial(self.charger.set_led_brightness, level),
-            f"set LED brightness to {level}",
+    async def async_set_direct_mode(self, enabled: bool) -> None:
+        """Turn plug-and-charge (direct work mode) on or off."""
+        await self._async_set(
+            "direct_mode",
+            enabled,
+            f"turn direct mode {'on' if enabled else 'off'}",
+            lambda: self.client.set_direct_work_mode(enabled),
         )
 
-        if result:
-            # Persist the setting
-            self._stored_settings["led_brightness"] = level
-            await self._async_save_stored_settings()
-
-        return result
-
-    async def async_set_direct_mode(self, enabled: bool) -> bool:
-        """
-        Set direct work mode (plug and charge).
-
-        When enabled, charging starts automatically when a vehicle is connected.
-        When disabled, charging must be started manually.
-
-        Args:
-            enabled: True to enable, False to disable
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        state = "enabled" if enabled else "disabled"
-        result = await self._async_send_command(
-            partial(self.charger.set_direct_work_mode, enabled),
-            f"set direct mode to {state}",
+    async def async_set_stop_on_disconnect(self, enabled: bool) -> None:
+        """Choose whether the session ends when the vehicle unplugs."""
+        await self._async_set(
+            "stop_on_disconnect",
+            enabled,
+            f"turn stop on disconnect {'on' if enabled else 'off'}",
+            lambda: self.client.set_stop_on_disconnect(enabled),
         )
 
-        if result:
-            # Persist the setting
-            self._stored_settings["direct_mode"] = enabled
-            await self._async_save_stored_settings()
-
-        return result
-
-    async def async_set_stop_on_disconnect(self, enabled: bool) -> bool:
-        """
-        Set whether to stop transaction when EV side disconnects.
-
-        When enabled, charging transaction stops automatically when
-        the vehicle disconnects from the cable.
-
-        Args:
-            enabled: True to enable auto-stop, False to disable
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        state = "enabled" if enabled else "disabled"
-        result = await self._async_send_command(
-            partial(self.charger.set_stop_on_disconnect, enabled),
-            f"set stop on disconnect to {state}",
+    async def async_set_max_voltage(self, voltage: int) -> None:
+        """Set the over-voltage limit (265-290 V)."""
+        await self._async_set(
+            "max_voltage",
+            voltage,
+            f"set the maximum voltage to {voltage} V",
+            lambda: self.client.set_max_voltage(voltage),
         )
 
-        if result:
-            # Persist the setting
-            self._stored_settings["stop_on_disconnect"] = enabled
-            await self._async_save_stored_settings()
-
-        return result
-
-    async def async_set_max_voltage(self, voltage: int) -> bool:
-        """
-        Set maximum working voltage.
-
-        If grid voltage exceeds this value, charging will stop.
-
-        Args:
-            voltage: Maximum voltage in volts (265-290V)
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        result = await self._async_send_command(
-            partial(self.charger.set_max_voltage, voltage),
-            f"set max voltage to {voltage}V",
+    async def async_set_min_voltage(self, voltage: int) -> None:
+        """Set the under-voltage limit (70-110 V)."""
+        await self._async_set(
+            "min_voltage",
+            voltage,
+            f"set the minimum voltage to {voltage} V",
+            lambda: self.client.set_min_voltage(voltage),
         )
-
-        if result:
-            # Persist the setting
-            self._stored_settings["max_voltage"] = voltage
-            await self._async_save_stored_settings()
-
-        return result
-
-    async def async_set_min_voltage(self, voltage: int) -> bool:
-        """
-        Set minimum working voltage.
-
-        If grid voltage falls below this value, charging will stop.
-
-        Args:
-            voltage: Minimum voltage in volts (70-110V)
-
-        Returns:
-            True if command was sent successfully
-        """
-        from functools import partial
-
-        result = await self._async_send_command(
-            partial(self.charger.set_min_voltage, voltage),
-            f"set min voltage to {voltage}V",
-        )
-
-        if result:
-            # Persist the setting
-            self._stored_settings["min_voltage"] = voltage
-            await self._async_save_stored_settings()
-
-        return result
-
-    async def async_reset_total_energy(self) -> None:
-        """
-        Reset the total energy counter to zero.
-
-        This is useful when you want to start tracking from a new baseline,
-        for example at the beginning of a billing period or after a move.
-        """
-        _LOGGER.info("Resetting total energy counter")
-        self._stored_settings["total_energy"] = 0.0
-        self._stored_settings["last_power"] = 0.0
-        self._stored_settings["last_update_time"] = None
-        await self._async_save_stored_settings()
-        await self.async_request_refresh()
-
-    def disconnect(self) -> None:
-        """
-        Disconnect from the charger.
-
-        Called when the integration is unloaded to clean up resources.
-        With the new connect/disconnect pattern, this is a no-op since
-        connections are closed after each operation.
-        """
-        # No persistent connection to close
-        pass

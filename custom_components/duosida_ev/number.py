@@ -83,14 +83,14 @@ class DuosidaMaxCurrentNumber(DuosidaEntity, NumberEntity):
         """
         Return the current max current setting.
 
-        Reads from coordinator's stored settings because the charger
-        doesn't report this value.
+        Read back from the charger, or the last value written from Home
+        Assistant if that is newer.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown. This prevents the integration from making
         assumptions about the charger's configuration.
         """
-        return self.coordinator.get_stored_setting("max_current")
+        return self.coordinator.get_setting("max_current")
 
     async def async_set_native_value(self, value: float) -> None:
         """
@@ -141,14 +141,14 @@ class DuosidaLedBrightnessNumber(DuosidaEntity, NumberEntity):
         """
         Return the current brightness level.
 
-        Reads from coordinator's stored settings because the charger
-        doesn't report this value.
+        The charger doesn't report this value reliably yet, so this is the
+        last value written from Home Assistant.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown. This prevents the integration from making
         assumptions about the charger's configuration.
         """
-        return self.coordinator.get_stored_setting("led_brightness")
+        return self.coordinator.get_setting("led_brightness")
 
     async def async_set_native_value(self, value: float) -> None:
         """
@@ -167,10 +167,7 @@ class DuosidaLedBrightnessNumber(DuosidaEntity, NumberEntity):
         if int_value == 2:
             int_value = 1
 
-        if await self.coordinator.async_set_led_brightness(int_value):
-            # Update the UI immediately
-            # The coordinator already updated the stored setting
-            self.async_write_ha_state()
+        await self.coordinator.async_set_led_brightness(int_value)
 
 
 class DuosidaMaxVoltageNumber(DuosidaEntity, NumberEntity):
@@ -214,13 +211,13 @@ class DuosidaMaxVoltageNumber(DuosidaEntity, NumberEntity):
         """
         Return the current max voltage setting.
 
-        Reads from coordinator's stored settings because the charger
-        doesn't report this value.
+        The charger doesn't report this value reliably yet, so this is the
+        last value written from Home Assistant.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown.
         """
-        return self.coordinator.get_stored_setting("max_voltage")
+        return self.coordinator.get_setting("max_voltage")
 
     async def async_set_native_value(self, value: float) -> None:
         """
@@ -229,8 +226,7 @@ class DuosidaMaxVoltageNumber(DuosidaEntity, NumberEntity):
         Args:
             value: Voltage in volts (265-290V)
         """
-        if await self.coordinator.async_set_max_voltage(int(value)):
-            self.async_write_ha_state()
+        await self.coordinator.async_set_max_voltage(int(value))
 
 
 class DuosidaMinVoltageNumber(DuosidaEntity, NumberEntity):
@@ -274,13 +270,13 @@ class DuosidaMinVoltageNumber(DuosidaEntity, NumberEntity):
         """
         Return the current min voltage setting.
 
-        Reads from coordinator's stored settings because the charger
-        doesn't report this value.
+        The charger doesn't report this value reliably yet, so this is the
+        last value written from Home Assistant.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown.
         """
-        return self.coordinator.get_stored_setting("min_voltage")
+        return self.coordinator.get_setting("min_voltage")
 
     async def async_set_native_value(self, value: float) -> None:
         """
@@ -289,5 +285,4 @@ class DuosidaMinVoltageNumber(DuosidaEntity, NumberEntity):
         Args:
             value: Voltage in volts (70-110V)
         """
-        if await self.coordinator.async_set_min_voltage(int(value)):
-            self.async_write_ha_state()
+        await self.coordinator.async_set_min_voltage(int(value))

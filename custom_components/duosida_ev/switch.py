@@ -177,14 +177,14 @@ class DuosidaDirectModeSwitch(DuosidaEntity, SwitchEntity):
         """
         Return true if direct mode is enabled, None if unknown.
 
-        Note: We read this from coordinator's stored settings because
-        the charger doesn't report this in its status messages.
+        The charger doesn't report this value reliably yet, so this is the
+        last value written from Home Assistant.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown. This prevents the integration from making
         assumptions about the charger's configuration.
         """
-        return self.coordinator.get_stored_setting("direct_mode")
+        return self.coordinator.get_setting("direct_mode")
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """
@@ -193,10 +193,7 @@ class DuosidaDirectModeSwitch(DuosidaEntity, SwitchEntity):
         After enabling, charging will start automatically when
         a vehicle is connected. The setting is persisted to HA storage.
         """
-        if await self.coordinator.async_set_direct_mode(True):
-            # Update the UI immediately
-            # The coordinator already updated the stored setting
-            self.async_write_ha_state()
+        await self.coordinator.async_set_direct_mode(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """
@@ -205,8 +202,7 @@ class DuosidaDirectModeSwitch(DuosidaEntity, SwitchEntity):
         After disabling, charging must be started manually.
         The setting is persisted to HA storage.
         """
-        if await self.coordinator.async_set_direct_mode(False):
-            self.async_write_ha_state()
+        await self.coordinator.async_set_direct_mode(False)
 
 
 class DuosidaStopOnDisconnectSwitch(DuosidaEntity, SwitchEntity):
@@ -237,14 +233,14 @@ class DuosidaStopOnDisconnectSwitch(DuosidaEntity, SwitchEntity):
         """
         Return true if stop on disconnect is enabled, None if unknown.
 
-        Note: We read this from coordinator's stored settings because
-        the charger doesn't report this in its status messages.
+        The charger doesn't report this value reliably yet, so this is the
+        last value written from Home Assistant.
 
         Returns None if the user hasn't set this value yet, indicating
         the state is unknown. This prevents the integration from making
         assumptions about the charger's configuration.
         """
-        return self.coordinator.get_stored_setting("stop_on_disconnect")
+        return self.coordinator.get_setting("stop_on_disconnect")
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """
@@ -253,8 +249,7 @@ class DuosidaStopOnDisconnectSwitch(DuosidaEntity, SwitchEntity):
         When enabled, the charging transaction will automatically stop
         when the vehicle is disconnected from the cable.
         """
-        if await self.coordinator.async_set_stop_on_disconnect(True):
-            self.async_write_ha_state()
+        await self.coordinator.async_set_stop_on_disconnect(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """
@@ -263,5 +258,4 @@ class DuosidaStopOnDisconnectSwitch(DuosidaEntity, SwitchEntity):
         When disabled, the transaction remains open even after
         the vehicle disconnects.
         """
-        if await self.coordinator.async_set_stop_on_disconnect(False):
-            self.async_write_ha_state()
+        await self.coordinator.async_set_stop_on_disconnect(False)

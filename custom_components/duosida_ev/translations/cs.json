@@ -20,18 +20,16 @@
         "description": "Zadejte podrobnosti o vaší nabíječce",
         "data": {
           "host": "IP adresa",
-          "port": "Port",
-          "device_id": "ID Zařízení (volitelné)",
-          "scan_interval": "Interval aktualizace (sekundy)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Připojení k nabíječce se nezdařilo",
-      "no_devices_found": "V síti nebyly nalezeny žádné nabíječky"
+      "cannot_connect": "Připojení k nabíječce se nezdařilo"
     },
     "abort": {
-      "already_configured": "Zařízení je již nakonfigurováno"
+      "already_configured": "Zařízení je již nakonfigurováno",
+      "no_devices_found": "V síti nebyly nalezeny žádné nabíječky"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Zastavit Nabíjení"
-      },
-      "reset_energy": {
-        "name": "Resetovat Celkovou Energii"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Možnosti Nabíječky Duosida EV",
         "description": "Konfigurovat nastavení integrace",
         "data": {
-          "scan_interval": "Interval aktualizace (sekundy)",
           "switch_debounce": "Debounce přepínače nabíjení (sekundy)"
         },
         "data_description": {
-          "scan_interval": "Jak často se nabíječka dotazuje na aktualizace stavu",
           "switch_debounce": "Jak dlouho udržovat stav přepínače nabíjení po odeslání příkazu (zabraňuje blikání UI)"
         }
       }

@@ -1,86 +1,56 @@
-"""
-Constants for the Duosida EV Charger integration.
-
-This file contains all the constant values used throughout the integration.
-Keeping constants in one place makes them easy to find and update.
-
-Types used:
-- Final: Indicates the value should never be changed
-"""
+"""Constants for the Duosida EV Charger integration."""
 
 from typing import Final
 
-# =============================================================================
-# Integration identifiers
-# =============================================================================
-
-# Domain is the unique identifier for this integration
-# Used in hass.data, entity unique IDs, etc.
-# Must match the folder name and manifest.json domain
 DOMAIN: Final = "duosida_ev"
-
-# Human-readable name shown in the UI
 NAME: Final = "Duosida EV Charger"
 
-# Key used to store the coordinator in hass.data
+# Keys in hass.data[DOMAIN]
 COORDINATOR: Final = "coordinator"
+RECONNECT_GATES: Final = "reconnect_gates"  # per charger host
 
-# =============================================================================
-# Configuration keys
-# =============================================================================
-
-# Keys used in config entry data
-# These match the keys used in the config flow
+# Config entry keys
 CONF_DEVICE_ID: Final = "device_id"
-CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_SWITCH_DEBOUNCE: Final = "switch_debounce"
 
-# =============================================================================
-# Default values
-# =============================================================================
-
-# Default TCP port for Duosida chargers
 DEFAULT_PORT: Final = 9988
 
-# Default polling interval in seconds
-# How often we fetch status from the charger
-DEFAULT_SCAN_INTERVAL: Final = 10
-
-# Default debounce delay for charging switch in seconds
-# After sending a start/stop command, the switch ignores coordinator updates
-# for this many seconds to prevent UI bounce during state transitions
+# After a start/stop command the charging switch keeps its optimistic state for
+# this many seconds, so it doesn't bounce while the charger changes state.
 DEFAULT_SWITCH_DEBOUNCE: Final = 30
 
-# =============================================================================
-# Connection retry settings
-# =============================================================================
+# The charger pushes its status about every 10 s over one persistent session.
+# The coordinator's periodic refresh is only a watchdog: it runs when no push
+# arrived for this many seconds, and reconnects if the session dropped.
+WATCHDOG_INTERVAL: Final = 30
 
-# Maximum number of connection retry attempts before giving up
-MAX_RETRY_ATTEMPTS: Final = 3
+# Longest wait for a status push after (re)connecting.
+STATUS_TIMEOUT: Final = 25
 
-# Initial retry delay in seconds
-INITIAL_RETRY_DELAY: Final = 1.0
+# Seconds before each reconnect attempt after a failure. The charger has a
+# single TCP session and refuses fast reconnects (for minutes, sometimes
+# longer), so attempts are spaced out.
+RECONNECT_BACKOFF: Final = (60, 120, 300)
 
-# Retry delay multiplier for exponential backoff
-# Delay sequence: 1s, 2s, 4s (with multiplier of 2.0)
-RETRY_BACKOFF_MULTIPLIER: Final = 2.0
+# The charger keeps its session busy for about 30 s after any close, so no new
+# connection is opened sooner than this after one ends (reload, config flow).
+SESSION_RELEASE_DELAY: Final = 35
 
-# Maximum retry delay in seconds (cap for exponential backoff)
-MAX_RETRY_DELAY: Final = 10.0
+# Close a session that stays connected without sending status for this many
+# watchdog refreshes in a row, so the next refresh can reconnect.
+SILENT_REFRESHES_BEFORE_RECONNECT: Final = 2
 
-# =============================================================================
-# Status codes
-# =============================================================================
+# Re-read the configuration at most this often (it only changes when written).
+CONFIGURATION_REFRESH_INTERVAL: Final = 600
 
-# Charger connection status codes
-# These come from the conn_status field in charger status
-# Source: Official Duosida Home Assistant integration
+# Connection status codes as this integration has always shown them. The raw
+# code comes from the charger; the names are kept stable for automations.
 STATUS_CODES: Final = {
-    0: "Available",  # Charger is ready, no vehicle connected
-    1: "Preparing",  # Vehicle connected, preparing to charge
-    2: "Charging",  # Actively charging
-    3: "Cooling",  # Cooling down after charging
-    4: "SuspendedEV",  # Charging suspended by vehicle
-    5: "Finished",  # Charging complete
-    6: "Holiday",  # Holiday mode (scheduled off)
+    0: "Available",
+    1: "Preparing",
+    2: "Charging",
+    3: "Cooling",
+    4: "SuspendedEV",
+    5: "Finished",
+    6: "Holiday",
 }

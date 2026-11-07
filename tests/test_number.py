@@ -1,228 +1,91 @@
-"""Test Duosida EV number entities."""
+"""Tests for the number entities."""
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import patch
+from collections.abc import Generator
+from unittest.mock import PropertyMock, patch
 
+from duosida_ev import CommandRejectedError
+from homeassistant.components.number import (
+    ATTR_VALUE,
+    DOMAIN as NUMBER_DOMAIN,
+    SERVICE_SET_VALUE,
+)
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from .conftest import FakeDuosidaClient, entity
 
 
-async def test_max_current_number(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test max charging current number entity."""
-    # Check max current number entity exists
-    max_current = hass.states.get(
-        "number.duosida_ev_charger_192_168_1_100_max_charging_current"
-    )
-    assert max_current is not None
-
-    # Check range
-    assert max_current.attributes["min"] == 6
-    assert max_current.attributes["max"] == 32
-    assert max_current.attributes["step"] == 1
-
-
-async def test_max_current_set_value(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test setting max current value."""
+@pytest.fixture(autouse=True)
+def enable_all_entities() -> Generator[None]:
+    """Enable the entities that are disabled by default."""
     with patch(
-        "custom_components.duosida_ev.coordinator.DuosidaDataUpdateCoordinator.async_set_max_current",
+        "homeassistant.helpers.entity.Entity.entity_registry_enabled_default",
+        new_callable=PropertyMock,
         return_value=True,
-    ) as mock_set:
-        # Set value
-        await hass.services.async_call(
-            "number",
-            "set_value",
-            {
-                "entity_id": "number.duosida_ev_charger_192_168_1_100_max_charging_current",
-                "value": 20,
-            },
-            blocking=True,
-        )
-
-        # Verify async_set_max_current was called with correct value
-        mock_set.assert_called_once_with(20)
+    ):
+        yield
 
 
-async def test_led_brightness_number(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test LED brightness number entity."""
-    # LED brightness is disabled by default
-    led_brightness = hass.states.get(
-        "number.duosida_ev_charger_192_168_1_100_led_brightness"
+async def _set(hass: HomeAssistant, key: str, value: float) -> None:
+    await hass.services.async_call(
+        NUMBER_DOMAIN,
+        SERVICE_SET_VALUE,
+        {ATTR_ENTITY_ID: entity("number", key), ATTR_VALUE: value},
+        blocking=True,
     )
-    assert led_brightness is None  # Disabled by default
 
 
-async def test_max_voltage_number(
-    hass: HomeAssistant,
-    setup_integration: Any,
+@pytest.mark.usefixtures("init_integration")
+async def test_max_current_shows_the_charger_value(hass: HomeAssistant) -> None:
+    """The maximum current is read from the charger."""
+    assert hass.states.get(entity("number", "max_charging_current")).state == "16"
+
+
+async def test_set_max_current(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
-    """Test max voltage number entity."""
-    # Max voltage is disabled by default
-    max_voltage = hass.states.get("number.duosida_ev_charger_192_168_1_100_max_voltage")
-    assert max_voltage is None  # Disabled by default
+    """Setting the current sends it and shows the new value."""
+    await _set(hass, "max_charging_current", 10)
+    assert ("set_max_current", 10) in client.calls
+    assert hass.states.get(entity("number", "max_charging_current")).state == "10"
 
 
-async def test_min_voltage_number(
-    hass: HomeAssistant,
-    setup_integration: Any,
+async def test_rejected_max_current_raises(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
-    """Test min voltage number entity."""
-    # Min voltage is disabled by default
-    min_voltage = hass.states.get("number.duosida_ev_charger_192_168_1_100_min_voltage")
-    assert min_voltage is None  # Disabled by default
+    """A rejected write surfaces as an error and the value stays."""
+    client.command_error = CommandRejectedError(
+        "set VendorMaxWorkCurrent", 1, "REJECTED"
+    )
+    with pytest.raises(HomeAssistantError):
+        await _set(hass, "max_charging_current", 10)
+    assert hass.states.get(entity("number", "max_charging_current")).state == "16"
 
 
-async def test_led_brightness_property(
+@pytest.mark.parametrize(
+    ("key", "value", "call"),
+    [
+        pytest.param("led_brightness", 3, ("set_led_brightness", 3), id="led"),
+        pytest.param("led_brightness", 2, ("set_led_brightness", 1), id="led_2_is_1"),
+        pytest.param("max_voltage", 270, ("set_max_voltage", 270), id="max_voltage"),
+        pytest.param("min_voltage", 90, ("set_min_voltage", 90), id="min_voltage"),
+    ],
+)
+async def test_set_stored_numbers(
     hass: HomeAssistant,
-    setup_integration: Any,
+    init_integration: MockConfigEntry,
+    client: FakeDuosidaClient,
+    key: str,
+    value: int,
+    call: tuple[str, int],
 ) -> None:
-    """Test LED brightness property reads from stored settings."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaLedBrightnessNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a number entity instance directly
-    number_entity = DuosidaLedBrightnessNumber(coordinator, "03123456789012345678")
-
-    # Test native_value reads from stored settings (should be None initially)
-    value = number_entity.native_value
-    assert value is None or isinstance(value, (int, float))
-
-
-async def test_max_voltage_property(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test max voltage property reads from stored settings."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaMaxVoltageNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a number entity instance directly
-    number_entity = DuosidaMaxVoltageNumber(coordinator, "03123456789012345678")
-
-    # Test native_value reads from stored settings (should be None initially)
-    value = number_entity.native_value
-    assert value is None or isinstance(value, (int, float))
-
-
-async def test_min_voltage_property(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test min voltage property reads from stored settings."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaMinVoltageNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a number entity instance directly
-    number_entity = DuosidaMinVoltageNumber(coordinator, "03123456789012345678")
-
-    # Test native_value reads from stored settings (should be None initially)
-    value = number_entity.native_value
-    assert value is None or isinstance(value, (int, float))
-
-
-async def test_led_brightness_async_set_value(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test LED brightness async_set_native_value method."""
-    from unittest.mock import patch
-
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaLedBrightnessNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create entity
-    number_entity = DuosidaLedBrightnessNumber(coordinator, "03123456789012345678")
-    number_entity.hass = hass
-
-    # Test with value 2 (should be mapped to 1)
-    with (
-        patch.object(coordinator, "async_set_led_brightness", return_value=True),
-        patch.object(number_entity, "async_write_ha_state") as mock_write,
-    ):
-        await number_entity.async_set_native_value(2)
-        coordinator.async_set_led_brightness.assert_called_once_with(1)  # Mapped from 2
-        mock_write.assert_called_once()
-
-    # Test with value 3 (no mapping)
-    with (
-        patch.object(coordinator, "async_set_led_brightness", return_value=True),
-        patch.object(number_entity, "async_write_ha_state") as mock_write,
-    ):
-        await number_entity.async_set_native_value(3)
-        coordinator.async_set_led_brightness.assert_called_once_with(3)
-        mock_write.assert_called_once()
-
-
-async def test_max_voltage_async_set_value(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test max voltage async_set_native_value method."""
-    from unittest.mock import patch
-
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaMaxVoltageNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create entity
-    number_entity = DuosidaMaxVoltageNumber(coordinator, "03123456789012345678")
-    number_entity.hass = hass
-
-    # Test with success
-    with (
-        patch.object(coordinator, "async_set_max_voltage", return_value=True),
-        patch.object(number_entity, "async_write_ha_state") as mock_write,
-    ):
-        await number_entity.async_set_native_value(280)
-        coordinator.async_set_max_voltage.assert_called_once_with(280)
-        mock_write.assert_called_once()
-
-
-async def test_min_voltage_async_set_value(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test min voltage async_set_native_value method."""
-    from unittest.mock import patch
-
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.number import DuosidaMinVoltageNumber
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create entity
-    number_entity = DuosidaMinVoltageNumber(coordinator, "03123456789012345678")
-    number_entity.hass = hass
-
-    # Test with success
-    with (
-        patch.object(coordinator, "async_set_min_voltage", return_value=True),
-        patch.object(number_entity, "async_write_ha_state") as mock_write,
-    ):
-        await number_entity.async_set_native_value(90)
-        coordinator.async_set_min_voltage.assert_called_once_with(90)
-        mock_write.assert_called_once()
+    """Settings that aren't read back show the last written value."""
+    assert hass.states.get(entity("number", key)).state == "unknown"
+    await _set(hass, key, value)
+    assert call in client.calls
+    assert hass.states.get(entity("number", key)).state == str(call[1])

@@ -1,246 +1,101 @@
-"""Test Duosida EV switches."""
+"""Tests for the switches."""
 
 from __future__ import annotations
 
-import time
-from typing import Any
-from unittest.mock import patch
+from collections.abc import Generator
+from unittest.mock import PropertyMock, patch
 
+from duosida_ev import CommandRejectedError
+from homeassistant.components.switch import DOMAIN as SWITCH_DOMAIN
+from homeassistant.const import (
+    ATTR_ENTITY_ID,
+    SERVICE_TURN_OFF,
+    SERVICE_TURN_ON,
+    STATE_OFF,
+    STATE_ON,
+    STATE_UNKNOWN,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from .conftest import FakeDuosidaClient, entity
 
 
-async def test_charging_switch(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test charging switch exists and reflects charger state."""
-    # Check charging switch exists
-    charging_switch = hass.states.get(
-        "switch.duosida_ev_charger_192_168_1_100_charging"
-    )
-    assert charging_switch is not None
-
-    # conn_status 2 = charging, so switch should be ON
-    assert charging_switch.state == "on"
-
-
-async def test_charging_switch_turn_on(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test turning on charging switch."""
+@pytest.fixture(autouse=True)
+def enable_all_entities() -> Generator[None]:
+    """Enable the entities that are disabled by default."""
     with patch(
-        "custom_components.duosida_ev.coordinator.DuosidaDataUpdateCoordinator.async_start_charging",
+        "homeassistant.helpers.entity.Entity.entity_registry_enabled_default",
+        new_callable=PropertyMock,
         return_value=True,
-    ) as mock_start:
-        # Turn on the switch
-        await hass.services.async_call(
-            "switch",
-            "turn_on",
-            {"entity_id": "switch.duosida_ev_charger_192_168_1_100_charging"},
-            blocking=True,
-        )
-
-        # Verify start_charging was called
-        mock_start.assert_called_once()
+    ):
+        yield
 
 
-async def test_charging_switch_turn_off(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test turning off charging switch."""
-    with patch(
-        "custom_components.duosida_ev.coordinator.DuosidaDataUpdateCoordinator.async_stop_charging",
-        return_value=True,
-    ) as mock_stop:
-        # Turn off the switch
-        await hass.services.async_call(
-            "switch",
-            "turn_off",
-            {"entity_id": "switch.duosida_ev_charger_192_168_1_100_charging"},
-            blocking=True,
-        )
-
-        # Verify stop_charging was called
-        mock_stop.assert_called_once()
-
-
-async def test_charging_switch_debounce(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test charging switch debounce logic."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaChargingSwitch
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaChargingSwitch(coordinator, "03123456789012345678")
-    switch.hass = hass
-
-    # Initially, should return actual state (conn_status == 2 means charging)
-    coordinator.data = {"conn_status": 0}  # Not charging
-    assert switch.is_on is False
-
-    # Simulate sending turn_on command (sets optimistic state)
-    switch._optimistic_state = True
-    switch._last_command_time = time.monotonic()
-
-    # Now should return optimistic state despite coordinator data
-    assert switch.is_on is True
-
-    # Even if coordinator data says not charging, debounce keeps it True
-    coordinator.data = {"conn_status": 0}
-    assert switch.is_on is True
-
-
-async def test_charging_switch_no_data(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test charging switch when coordinator has no data."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaChargingSwitch
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaChargingSwitch(coordinator, "03123456789012345678")
-
-    # Test is_on when coordinator.data is None
-    coordinator.data = None
-    assert switch.is_on is False
-
-
-async def test_direct_mode_switch(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test direct mode switch."""
-    # Check direct mode switch exists (disabled by default)
-    direct_mode_switch = hass.states.get(
-        "switch.duosida_ev_charger_192_168_1_100_direct_mode"
+async def _switch(hass: HomeAssistant, key: str, service: str) -> None:
+    await hass.services.async_call(
+        SWITCH_DOMAIN, service, {ATTR_ENTITY_ID: entity("switch", key)}, blocking=True
     )
-    assert direct_mode_switch is None  # Disabled by default
 
 
-async def test_stop_on_disconnect_switch(
-    hass: HomeAssistant,
-    setup_integration: Any,
+async def test_charging_switch_follows_the_charger(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
-    """Test stop on disconnect switch."""
-    # Check stop on disconnect switch exists (disabled by default)
-    stop_switch = hass.states.get(
-        "switch.duosida_ev_charger_192_168_1_100_stop_session_on_vehicle_disconnect"
-    )
-    assert stop_switch is None  # Disabled by default
+    """The charging switch is on while the charger reports Charging."""
+    assert hass.states.get(entity("switch", "charging")).state == STATE_ON
+    client.push(raw_state=0)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity("switch", "charging")).state == STATE_OFF
 
 
-async def test_direct_mode_switch_property(
-    hass: HomeAssistant,
-    setup_integration: Any,
+async def test_charging_switch_sends_commands_and_debounces(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
-    """Test direct mode switch property reads from stored settings."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaDirectModeSwitch
+    """Turning the switch off stops charging and holds the state meanwhile."""
+    await _switch(hass, "charging", SERVICE_TURN_OFF)
+    assert ("stop_charging",) in client.calls
+    client.push(raw_state=2)
+    await hass.async_block_till_done()
+    assert hass.states.get(entity("switch", "charging")).state == STATE_OFF
 
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaDirectModeSwitch(coordinator, "03123456789012345678")
-
-    # Test is_on reads from stored settings (should be None initially)
-    value = switch.is_on
-    assert value is None or isinstance(value, bool)
+    await _switch(hass, "charging", SERVICE_TURN_ON)
+    assert ("start_charging",) in client.calls
 
 
-async def test_stop_on_disconnect_switch_property(
-    hass: HomeAssistant,
-    setup_integration: Any,
+async def test_rejected_stop_raises(
+    hass: HomeAssistant, init_integration: MockConfigEntry, client: FakeDuosidaClient
 ) -> None:
-    """Test stop on disconnect switch property reads from stored settings."""
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaStopOnDisconnectSwitch
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaStopOnDisconnectSwitch(coordinator, "03123456789012345678")
-
-    # Test is_on reads from stored settings (should be None initially)
-    value = switch.is_on
-    assert value is None or isinstance(value, bool)
+    """A stop the charger refuses (no known transaction) is reported."""
+    client.command_error = CommandRejectedError("stop charging", 1, "Rejected")
+    with pytest.raises(HomeAssistantError):
+        await _switch(hass, "charging", SERVICE_TURN_OFF)
 
 
-async def test_direct_mode_switch_async_methods(
+@pytest.mark.parametrize(
+    ("key", "method"),
+    [
+        pytest.param("direct_mode", "set_direct_work_mode", id="direct_mode"),
+        pytest.param(
+            "stop_session_on_vehicle_disconnect",
+            "set_stop_on_disconnect",
+            id="stop_on_disconnect",
+        ),
+    ],
+)
+async def test_setting_switches(
     hass: HomeAssistant,
-    setup_integration: Any,
+    init_integration: MockConfigEntry,
+    client: FakeDuosidaClient,
+    key: str,
+    method: str,
 ) -> None:
-    """Test direct mode switch async turn on/off methods."""
-    from unittest.mock import patch
-
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaDirectModeSwitch
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaDirectModeSwitch(coordinator, "03123456789012345678")
-    switch.hass = hass
-
-    # Test turn_on with success
-    with (
-        patch.object(coordinator, "async_set_direct_mode", return_value=True),
-        patch.object(switch, "async_write_ha_state") as mock_write,
-    ):
-        await switch.async_turn_on()
-        mock_write.assert_called_once()
-
-    # Test turn_off with success
-    with (
-        patch.object(coordinator, "async_set_direct_mode", return_value=True),
-        patch.object(switch, "async_write_ha_state") as mock_write,
-    ):
-        await switch.async_turn_off()
-        mock_write.assert_called_once()
-
-
-async def test_stop_on_disconnect_switch_async_methods(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test stop on disconnect switch async turn on/off methods."""
-    from unittest.mock import patch
-
-    from custom_components.duosida_ev.const import COORDINATOR, DOMAIN
-    from custom_components.duosida_ev.switch import DuosidaStopOnDisconnectSwitch
-
-    # Get coordinator
-    coordinator = hass.data[DOMAIN][setup_integration.entry_id][COORDINATOR]
-
-    # Create a switch instance directly
-    switch = DuosidaStopOnDisconnectSwitch(coordinator, "03123456789012345678")
-    switch.hass = hass
-
-    # Test turn_on with success
-    with (
-        patch.object(coordinator, "async_set_stop_on_disconnect", return_value=True),
-        patch.object(switch, "async_write_ha_state") as mock_write,
-    ):
-        await switch.async_turn_on()
-        mock_write.assert_called_once()
-
-    # Test turn_off with success
-    with (
-        patch.object(coordinator, "async_set_stop_on_disconnect", return_value=True),
-        patch.object(switch, "async_write_ha_state") as mock_write,
-    ):
-        await switch.async_turn_off()
-        mock_write.assert_called_once()
+    """Setting switches start unknown and then show the last written value."""
+    assert hass.states.get(entity("switch", key)).state == STATE_UNKNOWN
+    await _switch(hass, key, SERVICE_TURN_ON)
+    assert (method, True) in client.calls
+    assert hass.states.get(entity("switch", key)).state == STATE_ON
+    await _switch(hass, key, SERVICE_TURN_OFF)
+    assert (method, False) in client.calls
+    assert hass.states.get(entity("switch", key)).state == STATE_OFF

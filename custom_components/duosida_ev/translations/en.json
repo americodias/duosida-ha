@@ -20,18 +20,18 @@
         "description": "Enter your charger details",
         "data": {
           "host": "IP Address",
-          "port": "Port",
-          "device_id": "Device ID (optional)",
-          "scan_interval": "Update interval (seconds)"
+          "port": "Port"
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to charger",
-      "no_devices_found": "No chargers found on network"
+      "busy": "The charger is still releasing its previous connection. Try again in {seconds} seconds."
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "no_devices_found": "No chargers found on network",
+      "busy": "The charger is still releasing its previous connection. Try again in {seconds} seconds."
     }
   },
   "entity": {
@@ -116,9 +116,6 @@
       },
       "stop": {
         "name": "Stop Charging"
-      },
-      "reset_energy": {
-        "name": "Reset Total Energy"
       }
     },
     "binary_sensor": {
@@ -133,11 +130,9 @@
         "title": "Duosida EV Charger Options",
         "description": "Configure integration settings",
         "data": {
-          "scan_interval": "Update interval (seconds)",
           "switch_debounce": "Charging switch debounce (seconds)"
         },
         "data_description": {
-          "scan_interval": "How often to poll the charger for status updates",
           "switch_debounce": "How long to hold the charging switch state after sending a command (prevents UI bounce)"
         }
       }

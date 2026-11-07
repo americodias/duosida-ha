@@ -1,187 +1,102 @@
-"""
-The Duosida Local integration for Home Assistant.
-
-This is the main entry point for the integration. Home Assistant calls these
-functions when the integration is set up or removed.
-
-Key concepts:
-- ConfigEntry: Stores the user's configuration (IP, device ID, etc.)
-- Platform: A type of entity (sensor, switch, button, etc.)
-- Coordinator: Manages data fetching and updates all entities
-"""
+"""The Duosida EV Charger integration for Home Assistant."""
 
 from __future__ import annotations
 
-import logging
-
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PORT, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PORT,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
+from homeassistant.core import Event, HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
-from duosida_ev import DuosidaCharger
+from duosida_ev import DuosidaClient
 
 from .const import (
     CONF_DEVICE_ID,
-    CONF_SCAN_INTERVAL,
     CONF_SWITCH_DEBOUNCE,
     COORDINATOR,
-    DEFAULT_SCAN_INTERVAL,
     DEFAULT_SWITCH_DEBOUNCE,
     DOMAIN,
+    RECONNECT_GATES,
 )
 from .coordinator import DuosidaDataUpdateCoordinator
 
-_LOGGER = logging.getLogger(__name__)
-
-# Define which platforms (entity types) this integration provides
-# Each platform has its own file (sensor.py, switch.py, etc.)
 PLATFORMS: list[Platform] = [
-    Platform.BINARY_SENSOR,  # Read-only on/off states (charging status)
-    Platform.SENSOR,  # Read-only values (voltage, current, etc.)
-    Platform.SWITCH,  # On/off controls (direct mode, stop on disconnect)
-    Platform.NUMBER,  # Numeric controls (max current, LED brightness)
-    Platform.BUTTON,  # Action triggers (start/stop buttons)
+    Platform.BINARY_SENSOR,
+    Platform.SENSOR,
+    Platform.SWITCH,
+    Platform.NUMBER,
+    Platform.BUTTON,
 ]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up a Duosida charger from a config entry.
+
+    The coordinator's shutdown, which Home Assistant runs on unload and when
+    setup fails, closes the session; the charger accepts only one.
     """
-    Set up Duosida Local from a config entry.
-
-    This function is called by Home Assistant when:
-    1. User adds the integration through the UI
-    2. Home Assistant starts and loads saved integrations
-
-    Args:
-        hass: The Home Assistant instance
-        entry: The configuration entry containing user settings
-
-    Returns:
-        True if setup was successful, False otherwise
-    """
-    # Initialize storage for this integration's data
-    # hass.data is a dictionary shared across Home Assistant
-    # We use DOMAIN as key to avoid conflicts with other integrations
-    hass.data.setdefault(DOMAIN, {})
-
-    # Extract configuration from the entry
-    # These values were saved during the config flow
-    host = entry.data[CONF_HOST]
-    port = entry.data.get(CONF_PORT, 9988)
     device_id = entry.data[CONF_DEVICE_ID]
+    _async_remove_reset_energy_button(hass, device_id)
 
-    # Get scan_interval from options (if user configured) or data (initial config)
-    # Options allow users to reconfigure without removing the integration
-    scan_interval = entry.options.get(
-        CONF_SCAN_INTERVAL,
-        entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
-    )
-
-    # Get switch_debounce from options (if user configured) or use default
-    switch_debounce = entry.options.get(
-        CONF_SWITCH_DEBOUNCE,
-        entry.data.get(CONF_SWITCH_DEBOUNCE, DEFAULT_SWITCH_DEBOUNCE),
-    )
-
-    _LOGGER.debug(
-        "Setting up Duosida charger at %s:%s (device_id: %s)", host, port, device_id
-    )
-
-    # Create the charger instance from our library
-    # This handles all the low-level TCP communication
-    charger = DuosidaCharger(
-        host=host,
-        port=port,
-        device_id=device_id,
-        debug=False,  # Set to True for protocol-level debugging
-    )
-
-    # Create the coordinator
-    # The coordinator is responsible for:
-    # - Fetching data from the charger periodically
-    # - Notifying all entities when new data is available
-    # - Handling errors and retries
-    # - Persisting and syncing settings the charger doesn't report back
     coordinator = DuosidaDataUpdateCoordinator(
         hass,
-        charger,
-        scan_interval,
-        device_id,  # Pass device_id for storage key
-        switch_debounce,  # Pass debounce value for charging switch
+        entry,
+        DuosidaClient(entry.data[CONF_HOST], entry.data[CONF_PORT]),
+        device_id,
+        entry.options.get(CONF_SWITCH_DEBOUNCE, DEFAULT_SWITCH_DEBOUNCE),
     )
-
-    # Load stored settings (LED brightness, direct mode) before first refresh
-    # These are settings the charger doesn't report back
     await coordinator.async_load_stored_settings()
-
-    # Fetch initial data before setting up entities
-    # This ensures entities have data when they're created
-    # If this fails, the setup will fail and HA will retry later
-    # Note: This also syncs stored settings to charger on first connection
     await coordinator.async_config_entry_first_refresh()
 
-    # Store the coordinator so other parts of the integration can access it
-    # Each config entry has its own entry_id (unique identifier)
-    hass.data[DOMAIN][entry.entry_id] = {
-        COORDINATOR: coordinator,
-    }
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {COORDINATOR: coordinator}
 
-    # Set up all platforms (sensors, switches, etc.)
-    # This calls async_setup_entry() in each platform file
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    async def _async_stop(_event: Event) -> None:
+        await coordinator.async_disconnect()
 
-    # Register options update listener
-    # This allows the integration to respond when user changes options
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop)
+    )
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
-    _LOGGER.info("Duosida charger at %s set up successfully", host)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
+def _async_remove_reset_energy_button(hass: HomeAssistant, device_id: str) -> None:
+    """Remove the 1.0 "Reset Total Energy" button.
+
+    Total energy now comes from the charger's own register, which can't be reset.
+    """
+    registry = er.async_get(hass)
+    if entity_id := registry.async_get_entity_id(
+        Platform.BUTTON, DOMAIN, f"{device_id}_reset_energy"
+    ):
+        registry.async_remove(entity_id)
+
+
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """
-    Update options.
-
-    This function is called when the user changes options via the UI.
-    We reload the entire integration to apply the new settings.
-
-    Args:
-        hass: The Home Assistant instance
-        entry: The configuration entry that was updated
-    """
-    _LOGGER.debug("Options updated, reloading integration")
+    """Reload the integration when its options change."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Unload a config entry.
-
-    This function is called when:
-    1. User removes the integration
-    2. User disables the integration
-    3. Home Assistant is shutting down
-
-    Args:
-        hass: The Home Assistant instance
-        entry: The configuration entry being unloaded
-
-    Returns:
-        True if unload was successful, False otherwise
-    """
-    # Unload all platforms
-    # This removes all entities created by this config entry
+    """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
     if unload_ok:
-        # Disconnect from the charger to free up resources
-        coordinator: DuosidaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id][
-            COORDINATOR
-        ]
-        coordinator.disconnect()
-
-        # Remove our data from hass.data
         hass.data[DOMAIN].pop(entry.entry_id)
-        _LOGGER.info("Duosida charger unloaded successfully")
-
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Forget the reconnect state of a removed charger, once it has expired.
+
+    Unloading just closed the session; keeping the gate until it expires stops
+    an immediate re-add from connecting while the charger still holds it.
+    """
+    gates = hass.data.get(DOMAIN, {}).get(RECONNECT_GATES, {})
+    if (gate := gates.get(entry.data[CONF_HOST])) and gate.wait_time() == 0:
+        del gates[entry.data[CONF_HOST]]

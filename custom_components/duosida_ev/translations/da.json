@@ -20,18 +20,16 @@
         "description": "Indtast oplysninger om din oplader",
         "data": {
           "host": "IP-adresse",
-          "port": "Port",
-          "device_id": "Enheds-ID (valgfrit)",
-          "scan_interval": "Opdateringsinterval (sekunder)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Kunne ikke oprette forbindelse til opladeren",
-      "no_devices_found": "Ingen opladere fundet på netværket"
+      "cannot_connect": "Kunne ikke oprette forbindelse til opladeren"
     },
     "abort": {
-      "already_configured": "Enheden er allerede konfigureret"
+      "already_configured": "Enheden er allerede konfigureret",
+      "no_devices_found": "Ingen opladere fundet på netværket"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Stop Opladning"
-      },
-      "reset_energy": {
-        "name": "Nulstil Total Energi"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV Oplader Indstillinger",
         "description": "Konfigurer integrationsindstillinger",
         "data": {
-          "scan_interval": "Opdateringsinterval (sekunder)",
           "switch_debounce": "Opladningskontakt debounce (sekunder)"
         },
         "data_description": {
-          "scan_interval": "Hvor ofte opladeren spørges om statusopdateringer",
           "switch_debounce": "Hvor længe opladningskontaktens tilstand holdes efter at en kommando er sendt (forhindrer UI-flimren)"
         }
       }

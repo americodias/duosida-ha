@@ -20,18 +20,16 @@
         "description": "Angi detaljene for laderen din",
         "data": {
           "host": "IP-adresse",
-          "port": "Port",
-          "device_id": "Enhets-ID (valgfritt)",
-          "scan_interval": "Oppdateringsintervall (sekunder)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Kunne ikke koble til laderen",
-      "no_devices_found": "Ingen ladere funnet på nettverket"
+      "cannot_connect": "Kunne ikke koble til laderen"
     },
     "abort": {
-      "already_configured": "Enheten er allerede konfigurert"
+      "already_configured": "Enheten er allerede konfigurert",
+      "no_devices_found": "Ingen ladere funnet på nettverket"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Stopp Lading"
-      },
-      "reset_energy": {
-        "name": "Tilbakestill Total Energi"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV Lader Alternativer",
         "description": "Konfigurer integrasjonsinnstillinger",
         "data": {
-          "scan_interval": "Oppdateringsintervall (sekunder)",
           "switch_debounce": "Ladebryteravstøyning (sekunder)"
         },
         "data_description": {
-          "scan_interval": "Hvor ofte laderen spørres om statusoppdateringer",
           "switch_debounce": "Hvor lenge ladebrytertilstanden holdes etter at en kommando er sendt (forhindrer UI-flimring)"
         }
       }

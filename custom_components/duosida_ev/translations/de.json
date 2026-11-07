@@ -20,18 +20,16 @@
         "description": "Geben Sie die Details Ihres Ladegeräts ein",
         "data": {
           "host": "IP-Adresse",
-          "port": "Port",
-          "device_id": "Geräte-ID (optional)",
-          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "cannot_connect": "Verbindung zum Ladegerät fehlgeschlagen",
-      "no_devices_found": "Keine Ladegeräte im Netzwerk gefunden"
+      "cannot_connect": "Verbindung zum Ladegerät fehlgeschlagen"
     },
     "abort": {
-      "already_configured": "Gerät ist bereits konfiguriert"
+      "already_configured": "Gerät ist bereits konfiguriert",
+      "no_devices_found": "Keine Ladegeräte im Netzwerk gefunden"
     }
   },
   "entity": {
@@ -116,9 +114,6 @@
       },
       "stop": {
         "name": "Laden Stoppen"
-      },
-      "reset_energy": {
-        "name": "Gesamtenergie Zurücksetzen"
       }
     },
     "binary_sensor": {
@@ -133,11 +128,9 @@
         "title": "Duosida EV Ladegerät Optionen",
         "description": "Integrationseinstellungen konfigurieren",
         "data": {
-          "scan_interval": "Aktualisierungsintervall (Sekunden)",
           "switch_debounce": "Ladeschalter-Entprellung (Sekunden)"
         },
         "data_description": {
-          "scan_interval": "Wie oft das Ladegerät nach Statusaktualisierungen abgefragt wird",
           "switch_debounce": "Wie lange der Ladeschalter-Zustand nach dem Senden eines Befehls gehalten wird (verhindert UI-Flackern)"
         }
       }

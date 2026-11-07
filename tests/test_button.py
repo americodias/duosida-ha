@@ -1,65 +1,41 @@
-"""Test Duosida EV button entities."""
+"""Tests for the buttons."""
 
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import patch
-
+from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN, SERVICE_PRESS
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from .conftest import FakeDuosidaClient, entity
 
 
-async def test_start_charging_button(
+@pytest.mark.parametrize(
+    ("key", "call"),
+    [
+        pytest.param("start_charging", ("start_charging",), id="start"),
+        pytest.param("stop_charging", ("stop_charging",), id="stop"),
+    ],
+)
+async def test_buttons_send_commands(
     hass: HomeAssistant,
-    setup_integration: Any,
+    init_integration: MockConfigEntry,
+    client: FakeDuosidaClient,
+    key: str,
+    call: tuple[str],
 ) -> None:
-    """Test start charging button."""
-    # Start charging button is enabled by default
-    start_button = hass.states.get(
-        "button.duosida_ev_charger_192_168_1_100_start_charging"
+    """Pressing a button sends its command."""
+    await hass.services.async_call(
+        BUTTON_DOMAIN,
+        SERVICE_PRESS,
+        {ATTR_ENTITY_ID: entity("button", key)},
+        blocking=True,
     )
-    assert start_button is not None
+    assert call in client.calls
 
 
-async def test_stop_charging_button(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test stop charging button."""
-    # Stop charging button is enabled by default
-    stop_button = hass.states.get(
-        "button.duosida_ev_charger_192_168_1_100_stop_charging"
-    )
-    assert stop_button is not None
-
-
-async def test_reset_energy_button(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test reset total energy button."""
-    # Reset energy button should exist
-    reset_button = hass.states.get(
-        "button.duosida_ev_charger_192_168_1_100_reset_total_energy"
-    )
-    assert reset_button is not None
-
-
-async def test_reset_energy_button_press(
-    hass: HomeAssistant,
-    setup_integration: Any,
-) -> None:
-    """Test pressing reset energy button."""
-    with patch(
-        "custom_components.duosida_ev.coordinator.DuosidaDataUpdateCoordinator.async_reset_total_energy",
-        return_value=None,
-    ) as mock_reset:
-        # Press the button
-        await hass.services.async_call(
-            "button",
-            "press",
-            {"entity_id": "button.duosida_ev_charger_192_168_1_100_reset_total_energy"},
-            blocking=True,
-        )
-
-        # Verify async_reset_total_energy was called
-        mock_reset.assert_called_once()
+@pytest.mark.usefixtures("init_integration")
+async def test_reset_energy_button_is_gone(hass: HomeAssistant) -> None:
+    """Total energy comes from the charger; there is nothing to reset."""
+    assert hass.states.get(entity("button", "reset_total_energy")) is None
